@@ -4,4 +4,5 @@
 log
 Downloads
 pytorch/*.out
+pytorch/data/
 .ipynb_checkpoints/
