@@ -1,0 +1,4 @@
+allennlp==0.4.2
+torch
+torchvision
+tqdm
