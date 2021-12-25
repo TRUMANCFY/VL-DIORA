@@ -3,4 +3,4 @@
 .pytest_cache
 log
 Downloads
-*.out
+pytorch/*.out
