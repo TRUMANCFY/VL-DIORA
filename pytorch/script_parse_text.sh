@@ -45,12 +45,14 @@ export PYTHONPATH=/itet-stor/fencai/net_scratch/diora/pytorch/:$PYTHONPATH
 # b6705305
 # model.step_5100.pt
 
+# 598ee336
+
 srun python diora/scripts/parse.py \
     --batch_size 10 \
     --data_type partit \
     --elmo_cache_dir data/elmo \
-    --load_model_path ../log/b6705305/model.step_5100.pt \
-    --model_flags ../log/b6705305/flags.json \
+    --load_model_path ../log/598ee336/model.step_8500.pt \
+    --model_flags ../log/598ee336/flags.json \
     --validation_path ./data/partit_data/3.bag/test \
     --validation_filter_length 20 \
     --word2idx './data/partit_data/partnet.dict.pkl'

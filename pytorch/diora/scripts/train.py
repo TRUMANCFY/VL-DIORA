@@ -53,6 +53,12 @@ def run_train(options, train_iterator, trainer, validation_iterator):
 
     step = 0
 
+    patience = 2
+    best_loss = float('inf')
+    no_improve_cnt = 0
+
+    loss_records = []
+
     for epoch, seed in zip(range(options.max_epoch), seeds):
         # --- Train--- #
 
@@ -76,12 +82,18 @@ def run_train(options, train_iterator, trainer, validation_iterator):
                 count += 1
                 # print('count: ', count)
 
+        batch_cnt = 0
+        cur_loss = 0.0
+
         for batch_idx, batch_map in myiterator():
             if options.finetune and step >= options.finetune_after:
                 trainer.freeze_diora()
             # print('batch_map: ', batch_map)
             result = trainer.step(batch_map)
             # print('result: ', result)
+
+            batch_cnt += result['batch_size']
+            cur_loss += result['total_loss'] * result['batch_size']
 
             experiment_logger.record(result)
 
@@ -106,6 +118,17 @@ def run_train(options, train_iterator, trainer, validation_iterator):
             step += 1
 
         experiment_logger.log_epoch(epoch, step)
+        avg_loss = cur_loss / batch_cnt
+        logger.info('The avg_loss is: {}'.format(str(avg_loss)))
+        
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            no_improve_cnt = 0
+        else:
+            no_improve_cnt += 1
+            if no_improve_cnt > patience:
+                logger.info("Already reach the patience")
+                sys.exit()
 
         if options.max_step is not None and step >= options.max_step:
             logger.info('Max-Step={} Quitting.'.format(options.max_step))
@@ -120,7 +143,7 @@ def get_train_dataset(options):
 
 def get_train_iterator(options, dataset):
     return make_batch_iterator(options, dataset, shuffle=True,
-            include_partial=False, filter_length=options.train_filter_length,
+            include_partial=True, filter_length=options.train_filter_length,
             batch_size=options.batch_size, length_to_size=options.length_to_size)
 
 

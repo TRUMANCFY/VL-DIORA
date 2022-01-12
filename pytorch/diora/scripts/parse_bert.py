@@ -14,11 +14,13 @@ from train_bert import build_net
 from diora.logging.configuration import get_logger
 
 # this one need to change
-from diora.analysis.cky_bert import BERTParsePredictor as CKY
+from diora.analysis.cky import ParsePredictor as CKY
 
 from diora.data.dataset import Vocabulary
 
 from transformers import AutoTokenizer, AutoModel, AutoConfig
+
+import numpy as np
 
 punctuation_words = set([x.lower() for x in ['.', ',', ':', '-LRB-', '-RRB-', '\'\'',
     '``', '--', ';', '-', '?', '!', '...', '-LCB-', '-RCB-']])
@@ -131,6 +133,49 @@ def replace_leaves(tree, leaves):
 
     return newtree
 
+def get_len(tree):
+    if isinstance(tree, str):
+        return 1
+    
+    return sum([get_len(x) for x in tree])
+
+def get_spans(tree):
+    queue = [(tree, 0)]
+    spans = []
+
+    while queue:
+        current_node = queue.pop(0)
+
+        tree = current_node[0]
+        offset = current_node[1]
+
+        spans.append((offset, offset + get_len(tree) - 1))
+
+        if not isinstance(tree[0], str):
+            queue.append((tree[0], offset))
+        
+        if not isinstance(tree[1], str):
+            queue.append((tree[1], offset + get_len(tree[0])))
+        
+    return set(spans)
+
+def get_stats(span1, span2):
+    tp = 0
+    fp = 0
+    fn = 0
+
+    for span in span1:
+        if span in span2:
+            tp += 1
+        else:
+            fp += 1
+    
+    for span in span2:
+        if span not in span1:
+            fn += 1
+    
+    return tp, fp, fn
+
 
 def run(options):
     logger = get_logger()
@@ -173,7 +218,7 @@ def run(options):
     trainer.net.eval()
 
     ## Parse predictor.
-    parse_predictor = CKY(net=diora, word2idx=word2idx)
+    parse_predictor = CKY(options=options, net=diora, word2idx=word2idx)
 
     batches = validation_iterator.get_iterator(random_seed=options.seed)
 
@@ -200,9 +245,7 @@ def run(options):
             trees = parse_predictor.parse_batch(batch_map)
 
             for ii, tr in enumerate(trees):
-                # print('batch_map: ', batch_map.keys())
                 example_id = batch_map['example_ids'][ii]
-                print('sentences[ii]: ', sentences[ii])
                 sent_tmp = [x for x in sentences[ii].tolist() if x>=0]
                 s = [idx2word[idx] for idx in sent_tmp]
                 tr = replace_leaves(tr, s)
@@ -213,6 +256,52 @@ def run(options):
                 f.write(json.dumps(o) + '\n')
 
     f.close()
+
+    # evaluate the result
+    with open(output_path, 'r') as f:
+        lines = [l.strip() for l in f.readlines()]
+
+    lines_res = [json.loads(x) for x in lines]
+
+    sent_f1_txt, corpus_f1_txt = [], [0., 0., 0.]
+
+    for idx, line in enumerate(lines_res):
+        print('line: ', line['tree'])
+        pred_txt = get_spans(line['tree'])
+        # print('pred_txt: ', pred_txt)
+        example_id = line['example_id']
+
+        with open(os.path.join(options.validation_path, example_id, 'lan_spans.txt'), 'r') as w:
+            gold_txt = json.loads(w.read())
+        print('gold_txt: ', gold_txt)
+        gold_txt = set([(a, b) for a, b in gold_txt])
+        tp_txt, fp_txt, fn_txt = get_stats(pred_txt, gold_txt)
+        corpus_f1_txt[0] += tp_txt
+        corpus_f1_txt[1] += fp_txt
+        corpus_f1_txt[2] += fn_txt
+
+        overlap_txt = pred_txt.intersection(gold_txt)
+        prec_txt = float(len(overlap_txt)) / (len(pred_txt) + 1e-8)
+        reca_txt = float(len(overlap_txt)) / (len(gold_txt) + 1e-8)
+
+        if len(gold_txt) == 0:
+            reca_txt = 1.
+            if len(pred_txt) == 0:
+                pred_txt = 1.
+        
+        f1_txt = 2 * prec_txt * reca_txt / (prec_txt + reca_txt + 1e-8)
+        sent_f1_txt.append(f1_txt)
+    
+    tp_txt, fp_txt, fn_txt = corpus_f1_txt
+    prec_txt = tp_txt / (tp_txt + fp_txt)
+    recall_txt = tp_txt / (tp_txt + fn_txt)
+    corpus_f1_txt = 2 * prec_txt * recall_txt / (prec_txt + reca_txt + 1e-8)
+    sent_f1_txt = np.mean(np.array(sent_f1_txt))
+
+    print('prec_txt: ', prec_txt)
+    print('recall_txt: ', recall_txt)
+    print('corpus_f1_txt: ', corpus_f1_txt)
+    print('sent_f1_txt: ', sent_f1_txt)
 
 
 if __name__ == '__main__':

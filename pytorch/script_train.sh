@@ -44,7 +44,7 @@ export PYTHONPATH=/itet-stor/fencai/net_scratch/diora/pytorch/:$PYTHONPATH
 srun python -m torch.distributed.launch --nproc_per_node=1 diora/scripts/train.py \
     --arch mlp-shared \
     --batch_size 64 \
-    --data_type partitwhole \
+    --data_type partit \
     --elmo_cache_dir ./data/elmo \
     --emb elmo \
     --hidden_dim 400 \
@@ -55,10 +55,10 @@ srun python -m torch.distributed.launch --nproc_per_node=1 diora/scripts/train.p
     --normalize unit \
     --save_after 500 \
     --train_filter_length 20 \
-    --train_path './data/partit_data/{}/train' \
-    --validation_path './data/partit_data/{}/test' \
+    --train_path './data/partit_data/1.table/train' \
+    --validation_path './data/partit_data/1.table/test' \
     --cuda \
-    --max_epoch 100 \
+    --max_epoch 1000 \
     --master_port 29500 \
     --word2idx './data/partit_data/partnet.dict.pkl'
     # --local_rank 0

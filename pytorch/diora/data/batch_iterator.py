@@ -36,6 +36,7 @@ def get_default_config():
         vocab=None,
         length_to_size=None,
         rank=None,
+        emb_type='elmo',
     )
 
     return default_config
@@ -96,6 +97,7 @@ class BatchIterator(object):
         negative_sampler = config.get('negative_sampler', None)
         workers = config.get('workers')
         length_to_size = config.get('length_to_size', None)
+        emb_type = config.get('emb_type', 'elmo')
 
         def collate_fn(batch):
             # list of indexes and list of sents
@@ -105,9 +107,6 @@ class BatchIterator(object):
             batch_map = {}
             batch_map['index'] = index
             batch_map['sents'] = sents
-
-            # print('batch_map: ', sents[0])
-            # print('batch_map lens: ', [len(x) for x in sents])
 
             for k, v in self.extra.items():
                 batch_map[k] = [v[idx] for idx in index]
@@ -125,16 +124,14 @@ class BatchIterator(object):
             dataset = SimpleDataset(self.sentences)
             # only get the index
             sampler = FixedLengthBatchSampler(dataset, batch_size=batch_size, rng=rng,
-                maxlen=filter_length, include_partial=include_partial, length_to_size=length_to_size)
+                maxlen=filter_length, include_partial=include_partial, length_to_size=length_to_size,
+                emb_type=emb_type)
             
             loader = torch.utils.data.DataLoader(dataset, shuffle=(sampler is None), num_workers=workers, pin_memory=pin_memory,batch_sampler=sampler, collate_fn=collate_fn)
             self.loader = loader
 
         def myiterator():
-            # print('Inside the iterator')
-
             for batch in self.loader:
-                # print('batch: ', batch)
                 index = batch['index']
                 sentences = batch['sents']
 

@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 
 from diora.data.dataset import ConsolidateDatasets, ReconstructDataset, make_batch_iterator, Vocabulary, CombineDataset, CombineBertDataset
+from diora.data.viz_dataset import VisionDataset, make_viz_batch_iterator
 
 from diora.utils.path import package_path
 from diora.logging.configuration import configure_experiment, get_logger
@@ -18,17 +19,21 @@ from diora.utils.checkpoint import save_experiment
 
 from diora.net.experiment_logger import ExperimentLogger
 
-from transformers import AutoTokenizer, AutoModel, AutoConfig
+from transformers import AutoTokenizer, AutoModel
 
-data_types_choices = ('nli', 'conll_jsonl', 'txt', 'txt_id', 'synthetic', 'jsonl', 'partit', "partitwhole")
+from diora.net.vision_models import get_model
+
+import pickle
+
+import numpy as np
+
+data_types_choices = ('nli', 'conll_jsonl', 'txt', 'txt_id', 'synthetic', 'jsonl', 'partit', "partitwhole", "viz")
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-
 def count_params(net):
     return sum([x.numel() for x in net.parameters() if x.requires_grad])
-
 
 def build_net(options, embeddings, batch_iterator=None):
     from diora.net.trainer import build_net
@@ -40,12 +45,17 @@ def build_net(options, embeddings, batch_iterator=None):
 
     return trainer
 
-
 def generate_seeds(n, seed=11):
     random.seed(seed)
     seeds = [random.randint(0, 2**16) for _ in range(n)]
     return seeds
 
+def sum_params(params):
+    # input is a list of params
+    total_sum = 0.0
+    for p in params:
+        total_sum += np.sum(p.cpu().numpy())
+    return total_sum
 
 def run_train(options, train_iterator, trainer, validation_iterator):
     logger = get_logger()
@@ -57,6 +67,20 @@ def run_train(options, train_iterator, trainer, validation_iterator):
 
     step = 0
 
+    patience = 2
+    best_loss = float('inf')  
+    no_improve_cnt = 0 
+
+    loss_records = []
+
+    ids_pred_class_mapping = {}
+
+    ids_image_parsing_mapping = {}
+
+    tmp_record_conv1 = None
+    tmp_record_head1 = None
+
+
     for epoch, seed in zip(range(options.max_epoch), seeds):
         # --- Train--- #
 
@@ -66,26 +90,80 @@ def run_train(options, train_iterator, trainer, validation_iterator):
 
         def myiterator():
             it = train_iterator.get_iterator(random_seed=seed)
-            # print('it: ', it)
-
             count = 0
 
             for batch_map in it:
                 # TODO: Skip short examples (optionally).
                 if batch_map['length'] <= 2:
-                    # print('wrong')
                     continue
 
                 yield count, batch_map
                 count += 1
-                # print('count: ', count)
+
+        batch_cnt = 0
+        cur_loss = 0
+
+        if tmp_record_conv1 is None:
+            print('assign conv1')
+            tmp_record_conv1 = trainer.net.embed.model.backbone.conv1.weight.detach().clone()
+            
+        if tmp_record_head1 is None:
+            print('assing head1')
+            tmp_record_head1 = trainer.net.embed.model.cluster_head[0].weight.data.detach().clone()
+
 
         for batch_idx, batch_map in myiterator():
             if options.finetune and step >= options.finetune_after:
                 trainer.freeze_diora()
-            sentences = batch_map['sentences']
             
             result = trainer.step(batch_map)
+            with torch.no_grad():
+                pred_vectors, pred_classes = trainer.get_class(batch_map)
+
+            # weight_cluster = trainer.net.embed.model.cluster_head[0].weight.data.detach().clone()
+
+            # if len(weights_cluster) > 0:
+                # print('HERE: ', weights_cluster[-1] == weight_cluster)
+            # weights_cluster.append(weight_cluster)
+            
+            batch_size = batch_map['batch_size']
+            
+            # save the parameters
+            for idx in range(batch_size):
+                example_id = batch_map['example_ids'][idx]
+                pred_class = pred_classes[idx].tolist()
+                pred_vector = pred_vectors[idx]
+
+                if example_id in ids_pred_class_mapping:
+                    new_str = '|'.join([str(x) for x in pred_class])
+                    origin_str = '|'.join([str(x) for x in ids_pred_class_mapping[example_id][1]])
+                    print('Output comparison: ', torch.equal(pred_vector, ids_pred_class_mapping[example_id][0]))
+                    if new_str != origin_str or torch.equal(pred_vector, ids_pred_class_mapping[example_id][0]):
+                        print('example_id: ', example_id)
+                        print('new_str: ', new_str)
+                        print('origin_str: ', origin_str)
+                        
+                        print('Conv comparison')
+                        print(tmp_record_conv1 == trainer.net.embed.model.backbone.conv1.weight.detach().clone())
+                        
+                        print('Head comparison')
+                        print(tmp_record_head1 == trainer.net.embed.model.cluster_head[0].weight.data.detach().clone())
+
+                        print('The sum of frozen part is {}'.format(str(sum_params(
+                            [p for p in trainer.net.parameters() if not p.requires_grad]
+                        ))))
+                        sys.exit()
+                else:
+                    ids_pred_class_mapping[example_id] = (pred_vector, pred_class)
+                    # ids_image_parsing_mapping[example_id] = image_tmp[idx]
+
+            # with torch.no_grad():
+            #     class_pred = trainer.get_class(batch_map)
+            #     print('class_pred: ', class_pred)
+
+            batch_cnt += result['batch_size']
+            cur_loss += result['total_loss'] * result['batch_size']
+            
             experiment_logger.record(result)
 
             if step % options.log_every_batch == 0:
@@ -109,53 +187,57 @@ def run_train(options, train_iterator, trainer, validation_iterator):
             step += 1
 
         experiment_logger.log_epoch(epoch, step)
+        avg_loss = cur_loss / batch_cnt
+        logger.info('The avg_loss is: {}'.format(str(avg_loss)))
+
+        # calculate
+        logger.info('The sum of frozen part is {}'.format(str(sum_params(
+            [p for p in trainer.net.parameters() if not p.requires_grad]
+        ))))
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            no_improve_cnt = 0
+        else:
+            no_improve_cnt += 1
+            if no_improve_cnt > patience:
+                logger.info("Already reach the patience")
+                # save
+                with open('./data/partit_data/train_pred_class.pkl', 'wb') as f:
+                    pickle.dump(ids_pred_class_mapping, f)
+                 
+                sys.exit()
 
         if options.max_step is not None and step >= options.max_step:
             logger.info('Max-Step={} Quitting.'.format(options.max_step))
             sys.exit()
 
-
-def get_train_dataset(options, tokenizer, model):
-    return CombineBertDataset().initialize(options,
-                                           tokenizer,
-                                           model,
-                                           text_path=options.train_path,
-                                           filter_length=options.train_filter_length)
-    # return CombineDataset().initialize(options,
-    #                                    tokenizer,
-    #                                    model,
-    #                                    text_path=options.train_path,
-    #                                    filter_length=options.train_filter_length)
+def get_train_dataset(options):
+    return VisionDataset().initialize(options,
+                                      vision_dir=options.train_path,
+                                      filter_length=options.train_filter_length)
 
 
 def get_train_iterator(options, dataset):
-    return make_batch_iterator(options, dataset, shuffle=True,
+    return make_viz_batch_iterator(options, dataset, shuffle=True,
             include_partial=True, filter_length=options.train_filter_length,
             batch_size=options.batch_size, length_to_size=options.length_to_size)
 
 
-def get_validation_dataset(options, tokenizer, model):
-    return CombineBertDataset().initialize(options,
-                                           tokenizer,
-                                           model,
-                                           text_path=options.validation_path,
-                                           filter_length=options.validation_filter_length)
-    # return CombineDataset().initialize(options,
-    #                                     tokenizer,
-    #                                     model,
-    #                                     text_path=options.validation_path,
-    #                                     filter_length=options.validation_filter_length)
-
+def get_validation_dataset(options):
+    return VisionDataset().initialize(options,
+                                      vision_dir=options.validation_path,
+                                      filter_length=options.validation_filter_length)
 
 def get_validation_iterator(options, dataset):
-    return make_batch_iterator(options, dataset, shuffle=False,
+    return make_viz_batch_iterator(options, dataset, shuffle=False,
             include_partial=True, filter_length=options.validation_filter_length,
             batch_size=options.validation_batch_size, length_to_size=options.length_to_size)
 
 
-def get_train_and_validation(options, tokenizer, model):
-    train_dataset = get_train_dataset(options, tokenizer, model)
-    validation_dataset = get_validation_dataset(options, tokenizer, model)
+def get_train_and_validation(options):
+    train_dataset = get_train_dataset(options)
+    validation_dataset = get_validation_dataset(options)
 
     return train_dataset, validation_dataset
 
@@ -165,36 +247,27 @@ def run(options):
     logger = get_logger()
     experiment_logger = ExperimentLogger()
 
-    # here we need to load the token or from pretrained
     bert_type = options.bert_type
 
-    if options.tokenizer_loading_path is not None and options.bertmodel_loading_path is not None:
-        print('tokenizer path: ', options.tokenizer_loading_path)
-        print('bertmodel path: ', options.bertmodel_loading_path)
-        tokenizer = AutoTokenizer.from_pretrained(options.tokenizer_loading_path, config=AutoConfig.from_pretrained(options.bertmodel_loading_path))
-        model = AutoModel.from_pretrained(options.bertmodel_loading_path)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(bert_type)
-        model = AutoModel.from_pretrained(bert_type)
-    
-    if options.freeze_bert:
-        for p in model.parameters():
-            p.requires_grad = False
-
-
-    train_dataset, validation_dataset = get_train_and_validation(options, tokenizer, model)
+    train_dataset, validation_dataset = get_train_and_validation(options)
 
     train_iterator = get_train_iterator(options, train_dataset)
     validation_iterator = get_validation_iterator(options, validation_dataset)
-    # embeddings = train_dataset['embeddings']
-    # print('embeddings: ', embeddings.shape)
-    
+
+    # load the model
+    model = get_model(options)
+
+    if options.freeze_model:
+        logger.info('The model has been frozen.')
+        print('model: ', model)
+        for p in model.parameters():
+            p.requires_grad = False
 
     logger.info('Initializing model.')
     trainer = build_net(options, model, validation_iterator)
     logger.info('Model:')
     for name, p in trainer.net.named_parameters():
-        logger.info('{} {}'.format(name, p.shape))
+        logger.info('{} {} {}'.format(name, p.shape, p.requires_grad))
 
     if options.save_init:
         logger.info('Saving model (init).')
@@ -274,7 +347,7 @@ def argument_parser():
     parser.add_argument('--reconstruct_mode', default='margin', choices=('margin', 'softmax'))
 
     # Model (Embeddings).
-    parser.add_argument('--emb', default='w2v', choices=('w2v', 'elmo', 'bert', 'both'))
+    parser.add_argument('--emb', default='w2v', choices=('w2v', 'elmo', 'bert', 'resnet', 'both'))
 
     # Model (Negative Sampler).
     parser.add_argument('--margin', default=1, type=float)
@@ -322,7 +395,13 @@ def argument_parser():
 
     # mask or not
     parser.add_argument('--mask', default=False, type=bool)
-    parser.add_argument('--freeze_bert', default=0, type=int)
+
+    # add vision type
+    parser.add_argument('--vision_type', default='chair', type=str)
+    # add vision model
+    parser.add_argument('--vision_pretrain_path', default=None, type=str)
+    # freeze model
+    parser.add_argument('--freeze_model', default=1, type=str)
 
     return parser
 

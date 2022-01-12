@@ -7,15 +7,17 @@ import torch
 
 from tqdm import tqdm
 
-from train import argument_parser, parse_args, configure
-from train import get_validation_dataset, get_validation_iterator
-from train import build_net
+from train_viz import argument_parser, parse_args, configure
+from train_viz import get_validation_dataset, get_validation_iterator
+from train_viz import build_net
 
 from diora.logging.configuration import get_logger
 
 from diora.analysis.cky import ParsePredictor as CKY
 
 from diora.data.dataset import Vocabulary
+
+from diora.net.vision_models import get_model
 
 import numpy as np
 
@@ -99,6 +101,13 @@ def override_inside_hook(var):
         B = self.batch_size
         L = length - level
 
+        # print('length: ', length)
+        # print('level: ', level)
+        # print('s.shape: ', s.shape)
+
+        # N is level
+
+        # s shape is (B, L, N, 1)
         assert s.shape[0] == B
         assert s.shape[1] == L
         # assert s.shape[2] == N
@@ -106,8 +115,12 @@ def override_inside_hook(var):
         assert len(s.shape) == 4
         smax = s.max(2, keepdim=True)[0]
         s = s - smax
+        # print('update s.shape: ', s.shape)
 
         for pos in range(L):
+            # print('level: ', level)
+            # print('pos: ', pos)
+            # print('s[:, pos, :]: ', s[:, pos, :].shape)
             self.saved_scalars[level][pos] = s[:, pos, :]
 
     var.inside_hook = types.MethodType(func, var)
@@ -132,10 +145,11 @@ def replace_leaves(tree, leaves):
     return newtree
 
 def get_len(tree):
-    if isinstance(tree, str):
+    if isinstance(tree, str) or isinstance(tree, int):
         return 1
     
     return sum([get_len(x) for x in tree])
+
 
 def get_spans(tree):
     queue = [(tree, 0)]
@@ -148,11 +162,10 @@ def get_spans(tree):
         offset = current_node[1]
 
         spans.append((offset, offset + get_len(tree) - 1))
-
-        if not isinstance(tree[0], str):
+        if not isinstance(tree[0], str) and not isinstance(tree[0], int):
             queue.append((tree[0], offset))
         
-        if not isinstance(tree[1], str):
+        if not isinstance(tree[1], str) and not isinstance(tree[1], int):
             queue.append((tree[1], offset + get_len(tree[0])))
         
     return set(spans)
@@ -174,21 +187,19 @@ def get_stats(span1, span2):
     
     return tp, fp, fn
 
+
 def run(options):
     logger = get_logger()
 
     validation_dataset = get_validation_dataset(options)
     validation_iterator = get_validation_iterator(options, validation_dataset)
-    word2idx = validation_dataset['word2idx']
-    embeddings = validation_dataset['embeddings']
-
-    idx2word = {v: k for k, v in word2idx.items()}
+    model = get_model(options)
+    word2idx = None
 
     logger.info('Initializing model.')
-    trainer = build_net(options, embeddings, validation_iterator)
+    trainer = build_net(options, model, validation_iterator)
 
     # Parse
-
     diora = trainer.net.diora
 
     ## Monkey patch parsing specific methods.
@@ -213,11 +224,14 @@ def run(options):
 
     f = open(output_path, 'w')
 
+    pred_class_dict = {}
+
     with torch.no_grad():
         for i, batch_map in tqdm(enumerate(batches)):
-            sentences = batch_map['sentences']
-            batch_size = sentences.shape[0]
-            length = sentences.shape[1]
+            samples = batch_map['samples']
+            targets = batch_map['targets']
+            batch_size = samples.shape[0]
+            length = samples.shape[1]
 
             # Skip very short sentences.
             if length <= 2:
@@ -225,11 +239,16 @@ def run(options):
 
             _ = trainer.step(batch_map, train=False, compute_loss=False)
 
+            pred_labels = trainer.get_class(batch_map)[1]
+            
             trees = parse_predictor.parse_batch(batch_map)
 
             for ii, tr in enumerate(trees):
                 example_id = batch_map['example_ids'][ii]
-                s = [idx2word[idx] for idx in sentences[ii].tolist()]
+                # s = [idx2word[idx] for idx in sentences[ii].tolist()]
+                s = targets[ii].tolist()
+                pred_class_dict[example_id] = pred_labels[ii].tolist()
+
                 tr = replace_leaves(tr, s)
                 if options.postprocess:
                     tr = postprocess(tr, s)
@@ -239,6 +258,7 @@ def run(options):
 
     f.close()
 
+    # evaluate the result
     with open(output_path, 'r') as f:
         lines = [l.strip() for l in f.readlines()]
 
@@ -247,16 +267,17 @@ def run(options):
     sent_f1_txt, corpus_f1_txt = [], [0., 0., 0.]
 
     for idx, line in enumerate(lines_res):
+        
         pred_txt = get_spans(line['tree'])
         example_id = line['example_id']
 
-        with open(os.path.join(options.validation_path, example_id, 'lan_spans.txt'), 'r') as w:
+        with open(os.path.join(options.validation_path, example_id, 'vis_spans.txt'), 'r') as w:
             gold_txt = json.loads(w.read())
-
+        
         print('line: ', line['tree'])
-        print('pred_span: ', pred_txt)
-        print('gold_txt: ', gold_txt)
-
+        print('pred class: ', pred_class_dict[example_id])
+        print("gold_txt: ", gold_txt)
+        
         gold_txt = set([(a, b) for a, b in gold_txt])
         tp_txt, fp_txt, fn_txt = get_stats(pred_txt, gold_txt)
         corpus_f1_txt[0] += tp_txt
@@ -278,13 +299,14 @@ def run(options):
     tp_txt, fp_txt, fn_txt = corpus_f1_txt
     prec_txt = tp_txt / (tp_txt + fp_txt)
     recall_txt = tp_txt / (tp_txt + fn_txt)
-    corpus_f1_txt = 2 * prec_txt * recall_txt / (prec_txt + recall_txt + 1e-8)
+    corpus_f1_txt = 2 * prec_txt * recall_txt / (prec_txt + reca_txt + 1e-8)
     sent_f1_txt = np.mean(np.array(sent_f1_txt))
 
     print('prec_txt: ', prec_txt)
     print('recall_txt: ', recall_txt)
     print('corpus_f1_txt: ', corpus_f1_txt)
     print('sent_f1_txt: ', sent_f1_txt)
+
 
 
 if __name__ == '__main__':

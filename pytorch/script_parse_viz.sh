@@ -21,47 +21,62 @@ set -o errexit
 source /itet-stor/fencai/net_scratch/anaconda3/bin/activate diora
 export PYTHONPATH=/itet-stor/fencai/net_scratch/diora/pytorch/:$PYTHONPATH
 
-# srun python diora/scripts/parse.py \
-#     --batch_size 10 \
-#     --data_type txt_id \
-#     --elmo_cache_dir data/elmo \
-#     --load_model_path ../Downloads/diora-checkpoints/mlp-softmax-shared/model.pt \
-#     --model_flags ../Downloads/diora-checkpoints/mlp-softmax-shared/flags.json \
-#     --validation_path ./sample.txt \
-#     --validation_filter_length 10
+# ebdde512
+# e2bd512b
 
-# 1e1044b6
-# model.step_700.pt
+# bag: 30cb2364
 
-# ec6b79bd
+# bed: a4df82a5
 
-# d6152b49
-# model.step_900.pt
+# table: 49d65919
 
-# 437752: be50a128
+# table: model not frozen 6cce0009
 
-# bed: fc14bc07
+# chair not frozen 4d9e6436
 
-# table: 26074f4a model.step_2700.pt
+# chair frozen: bb6f3ac1: model.step_50800.pt
 
-# chair: 3fdb81a3 model.step_2500.pt
+### new loss
 
-# bag: 3b010f77 mode.step_1400.pt
+# table
+# frozen: e7ed6d25
+# not frozen: 0fe669fa
 
-srun python diora/scripts/parse_bert.py \
-    --batch_size 10 \
+# c3c9f330
+
+# 61d9004a: checkpoint 14300
+# 7c2531b3; model 16800
+
+# kl + freecls: 4d391393
+
+# correct the number of classes: 472643c9 model.step_14300.pt
+
+# use the classfication result: 0f271581 model.step_3100.pt
+
+# a0d66393 12400
+
+# b6d3adf7
+
+# ecb61fe6 model.step_12400.pt
+
+# 8de11564: model.
+
+
+
+srun python diora/scripts/parse_viz.py \
+    --batch_size 1 \
     --data_type partit \
-    --emb bert \
-    --load_model_path ../log/3b010f77/model.step_1400.pt \
-    --model_flags ../log/3b010f77/flags.json \
-    --validation_path ./data/partit_data/3.bag/test \
+    --data_type viz \
+    --emb resnet \
+    --load_model_path ../log/b49162ba/model.step_8000.pt \
+    --model_flags ../log/b49162ba/flags.json \
+    --validation_path ./data/partit_data/0.chair/test \
     --validation_filter_length 20 \
     --word2idx './data/partit_data/partnet.dict.pkl' \
     --k_neg 5 \
-    --freeze_bert 1 \
-    --cuda
-
-    # --elmo_cache_dir data/elmo \
+    --freeze_model 1 \
+    --cuda \
+    --vision_type "chair"
 
 echo finished at: `date`
 exit 0;

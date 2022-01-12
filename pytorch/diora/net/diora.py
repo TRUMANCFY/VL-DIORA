@@ -61,13 +61,32 @@ class Index(object):
     def __init__(self, cuda=False):
         super(Index, self).__init__()
         self.cuda = cuda
+        # example
+        # (length, level): (4, 1)
+        # (tensor([0, 1, 2], device='cuda:0'), tensor([1, 2, 3], device='cuda:0'))
+        # (4, 2)
+        # (tensor([0, 4, 1, 5], device='cuda:0'), tensor([5, 2, 6, 3], device='cuda:0'))
+        # (4, 3)
+        # (tensor([0, 4, 7], device='cuda:0'), tensor([8, 6, 3], device='cuda:0'))
+
         self.inside_index_cache = {}
+
+        # example
+        # (length, level): (4, 2)
+        # (tensor([9, 9], device='cuda:0'), tensor([3, 0], device='cuda:0'))
+        # (4, 1)
+        # (tensor([9, 8, 8, 7, 7, 9], device='cuda:0'), tensor([6, 3, 1, 2, 0, 4], device='cuda:0'))
+        # (4, 0)
+        # (tensor([9, 8, 6, 6, 7, 5, 5, 8, 4, 4, 7, 9], device='cuda:0'), tensor([8, 6, 3, 2, 5, 2, 1, 5, 1, 0, 4, 7], device='cuda:0'))
         self.outside_index_cache = {}
+        # offset_cache is a dict of dict
+        # {7: {0: 0, 1: 7, 2: 13, 3: 18, 4: 22, 5: 25, 6: 27}, ...}
         self.offset_cache = {}
 
     def get_offset(self, length):
         if length not in self.offset_cache:
             self.offset_cache[length] = get_offset_cache(length)
+        
         return self.offset_cache[length]
 
     def get_inside_index(self, length, level):
@@ -78,6 +97,9 @@ class Index(object):
             self.inside_index_cache[(length, level)] = \
                 get_inside_index(length, level,
                     self.get_offset(length), cuda=self.cuda)
+            # print('length: ', length)
+            # print('level: ', level)
+            # print('self.inside_index_cache[(length, level)]: ', self.inside_index_cache[(length, level)])
         return self.inside_index_cache[(length, level)]
 
     def get_outside_index(self, length, level):
@@ -85,6 +107,10 @@ class Index(object):
             self.outside_index_cache[(length, level)] = \
                 get_outside_index(length, level,
                     self.get_offset(length), cuda=self.cuda)
+
+            # print('length: ', length)
+            # print('level: ', level)
+            # print('self.outside_index_cache[(length, level)]: ', self.outside_index_cache[(length, level)])
         return self.outside_index_cache[(length, level)]
 
 
@@ -151,11 +177,15 @@ class ComposeMLP(nn.Module):
         self.ninput = ninput
  
         if leaf:
+            # (emb_size, emb_size)
             self.V = nn.Parameter(torch.FloatTensor(self.size, self.size))
-        
+        # （2 x emb_size, emb_size）
         self.W_0 = nn.Parameter(torch.FloatTensor(2 * self.size, self.size))
+        # (emb_size, emb_size)
         self.W_1 = nn.Parameter(torch.FloatTensor(self.size, self.size))
+        # (emb_size)
         self.B = nn.Parameter(torch.FloatTensor(self.size))
+        # (emb_size)
         self.B_1 = nn.Parameter(torch.FloatTensor(self.size))
         self.reset_parameters()
 
@@ -185,6 +215,7 @@ class ComposeMLP(nn.Module):
 
     def forward(self, hs, cs, constant=1.0):
         # cs is not useful here, it is only set for the treelstm
+        # input_h batch_size x length x emb_size
         input_h = torch.cat(hs, 1)
         h = torch.relu(torch.matmul(input_h, self.W_0) + self.B)
         h = torch.relu(torch.matmul(h, self.W_1) + self.B_1)
@@ -276,6 +307,8 @@ def inside_aggregate(batch_info, h, c, s, p, normalize_func):
 
 
 def inside_func(compose_func, score_func, batch_info, chart, index, normalize_func):
+    # compose_func: ComposeMLP(self.size, leaf=True)
+    # score_func: Bilinear(self.size)
     # chart.inside_h: (batch_size, ncells, size)
     lh, rh = get_inside_states(batch_info, chart.inside_h, index, batch_info.size)
     lc, rc = get_inside_states(batch_info, chart.inside_c, index, batch_info.size)
@@ -285,7 +318,10 @@ def inside_func(compose_func, score_func, batch_info, chart, index, normalize_fu
     clst = [lc, rc]
     slst = [ls, rs]
 
+    # (batch_size x certain_len x emb_size)
     h, c = inside_compose(compose_func, hlst, clst)
+    # (B, L, N, 1), L = length - level; N = level;
+    # p is the softmax of s
     s, p = inside_score(score_func, batch_info, hlst, slst)
     hbar, cbar, sbar = inside_aggregate(batch_info, h, c, s, p, normalize_func)
 

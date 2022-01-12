@@ -26,23 +26,46 @@ export PYTHONPATH=/itet-stor/fencai/net_scratch/diora/pytorch/:$PYTHONPATH
 
 srun python -m torch.distributed.launch --nproc_per_node=1 diora/scripts/train_bert.py \
     --arch mlp-shared \
-    --batch_size 64 \
-    --data_type partitwhole \
+    --batch_size 8 \
+    --data_type partit \
     --emb bert \
     --hidden_dim 400 \
-    --k_neg 100 \
+    --k_neg 30 \
     --log_every_batch 100 \
     --lr 1e-4 \
     --normalize unit \
     --reconstruct_mode softmax \
     --save_after 500 \
     --train_filter_length 20 \
-    --train_path './data/partit_data/{}/train' \
-    --validation_path './data/partit_data/{}/test' \
+    --train_path './data/partit_data/0.chair/train' \
+    --validation_path './data/partit_data/0.chair/test' \
     --cuda \
-    --max_epoch 100 \
-    --master_port 29500 \
-    --word2idx './data/partit_data/partnet.dict.pkl'
+    --max_epoch 200 \
+    --master_port 29501 \
+    --word2idx './data/partit_data/partnet.dict.pkl' \
+    --freeze_bert 1
+
+# srun python -m torch.distributed.launch --nproc_per_node=1 diora/scripts/train_bert.py \
+#     --arch mlp-shared \
+#     --batch_size 8 \
+#     --data_type partitwhole \
+#     --emb bert \
+#     --hidden_dim 400 \
+#     --k_neg 50 \
+#     --log_every_batch 100 \
+#     --lr 1e-4 \
+#     --normalize unit \
+#     --reconstruct_mode softmax \
+#     --save_after 500 \
+#     --train_filter_length 20 \
+#     --train_path './data/partit_data/{}/train' \
+#     --validation_path './data/partit_data/{}/test' \
+#     --cuda \
+#     --max_epoch 200 \
+#     --master_port 29501 \
+#     --word2idx './data/partit_data/partnet.dict.pkl' \
+#     --freeze_bert 1
+
     # --tokenizer_loading_path './data/bert/toks/' \
     # --bertmodel_loading_path './data/bert/model/'
     # # --local_rank 0

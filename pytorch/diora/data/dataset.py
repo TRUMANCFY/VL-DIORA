@@ -132,7 +132,11 @@ class ReaderManager(object):
                 embeddings, word2idx = EmbeddingsReader().get_embeddings(
                     options, embeddings_path, word2idx)
 
-        unk_index = word2idx.get(UNK_TOKEN, None)
+        # idx2word = {v:k for k, v in word2idx.items()}
+        # print('unk tk: ', word2idx['<unk>'])
+        # print('unk idx: ', idx2word[0])
+        unk_index = word2idx.get(UNK_TOKEN, 0)
+        
         logger.info('Converting tokens to indexes (unk_index={}).'.format(unk_index))
         sentences = indexify(sentences, word2idx, unk_index)
         
@@ -259,6 +263,69 @@ def generate_inputs(sent, tokenizer):
     #     print(y)
 
     # assert len(sent) == len(inputs['labels']), 'All tokens should be inside'
+
+    return inputs
+
+def generate_inputs_worigin(sent, tokenizer, sent_tks, mask=True):
+    # check the overall length
+    word_len = len(sent_tks)
+
+    assume_word_len = word_len + 14
+
+    len_sent = len(sent)
+    sent_join = ' '.join(sent)
+    inputs = tokenizer(sent_join, return_tensors='pt')
+
+    inputs['labels'] = inputs.input_ids.detach().clone()
+
+    tks_len = len(inputs.input_ids[0].tolist())
+
+    assert tks_len <=  assume_word_len, 'The assumed word length {} is shorter than Bert tks_len {}, sent: {}'.format(assume_word_len, tks_len, sent_join)
+
+    addition_tks_len = assume_word_len - tks_len
+
+    tokens = []
+    tokens_mask = []
+
+    start_pos = 1
+    end_pos = start_pos
+
+    for word in sent:
+        word_tokens = tokenizer.tokenize(word)
+        tk_len = len(word_tokens)
+        end_pos = start_pos + tk_len
+        tk_mask = [0. for _ in range(assume_word_len)]
+        tk_mask[start_pos:end_pos] = [1./tk_len for _ in range(tk_len)]
+        start_pos = end_pos
+
+        tokens_mask.append(tk_mask)
+
+    assert end_pos == tks_len-1, 'The last position should be the same as the sentence length.'
+
+    # origin_len x input_tk_len
+    inputs['token_mask'] = torch.FloatTensor(tokens_mask)
+
+    if mask:
+        # generate the mask
+        rand = torch.rand(inputs.input_ids.shape)
+        mask_arr = (rand < 0.15) * (inputs.input_ids != 101) * (inputs.input_ids != 102)
+        selection = torch.flatten((mask_arr[0].nonzero())).tolist()
+        inputs.input_ids[0, selection] = 103
+
+        no_mask = set(range(len(inputs.input_ids)))
+        inputs['labels'][0, list(no_mask)] = -100
+    
+
+    # padding to
+    inputs['input_ids'] = torch.LongTensor(inputs['input_ids'][0].tolist() + [0 for _ in range(addition_tks_len)]).unsqueeze(0)
+    inputs['token_type_ids'] = torch.LongTensor(inputs['token_type_ids'][0].tolist() + [0 for _ in range(addition_tks_len)]).unsqueeze(0)
+    inputs['attention_mask'] = torch.LongTensor(inputs['attention_mask'][0].tolist() + [0 for _ in range(addition_tks_len)]).unsqueeze(0)
+    inputs['labels'] = torch.LongTensor(inputs['labels'][0].tolist() + [-100 for _ in range(addition_tks_len)]).unsqueeze(0)
+
+    # add seq
+    inputs['origin_input_ids'] = torch.LongTensor(sent_tks).unsqueeze(0)
+
+    inputs['sents'] = sent
 
     return inputs
 
@@ -393,11 +460,6 @@ class CombineDataset(object):
         reconstruct_sents = reconstruct_data['sentences']
         reconstruct_extra = reconstruct_data['extra']['example_ids']
 
-        # print('len(reconstruct_sents): ', len(reconstruct_sents))
-        # print('len(reconstruct_extra): ', len(reconstruct_extra))
-        # print('reconstruct_sents: ', reconstruct_sents)
-        # print('reconstruct_extra: ', reconstruct_extra)
-
         assert len(reconstruct_sents) == len(reconstruct_extra), 'The length of reconstruction should be the same.'
 
         mlm_sents = mlm_data['sentences']
@@ -444,23 +506,61 @@ class CombineDataset(object):
         }
 
 
-# def make_batch_iterator_bert(options, dset, shuffle=True, include_partial=False, filter_length=0,
-#                         batch_size=None, length_to_size=None):
-#     sentences = dset['sentences']
-#     word2idx = dset['word2idx']
-#     extra = dset['extra']
-#     metadata = dset['metadata']
+class CombineBertDataset(object):
+    def initialize(self, options, tokenizer, model, text_path, filter_length):
+        # load the basic 
+        reconstruct_data = ReconstructDataset().initialize(options,
+                                                           text_path=text_path,
+                                                           filter_length=filter_length,
+                                                           data_type=options.data_type)
+        
+        # construct the set
+        reconstruct_sents = reconstruct_data['sentences']
+        reconstruct_example_ids = reconstruct_data['extra']['example_ids']
 
-#     cuda = options.cuda
-#     multigpu = options.multigpu
-#     ngpus = 1
-    
+        reconstruct_mapping = {}
 
+        for k, v in zip(reconstruct_example_ids, reconstruct_sents):
+            reconstruct_mapping[k] = v
+        
+        # load the bert
+        if options.data_type == 'partitwhole':
+            reader = PartItWholeTextReader(lowercase=options.lowercase, filter_length=filter_length)
+        elif options.data_type == 'partit':
+            reader = PartItTextReader(lowercase=options.lowercase, filter_length=filter_length)
+        else:
+            raise Exception("BERT only for partit and partitwhole.")
 
-#     # DIRTY HACK: Makes it easier to print examples later. Should really wrap this within the class.
-#     batch_iterator.word2idx = word2idx
+        reader_result = reader.read(text_path)
+        sentences = reader_result['sentences']
+        example_ids = reader_result['extra']['example_ids']
+        metadata = reader_result.get('metadata', {})
 
-#     return batch_iterator
+        print('options.word2idx: ', options.word2idx)
+        if options.word2idx is not None:
+            with open(options.word2idx, 'rb') as r:
+                word2idx = pickle.load(r)
+            word2idx = word2idx.word2idx
+
+        word_set = set([x for l in sentences for x in l])
+        print('There is {} oov words'.format(len(word_set - set(word2idx.keys()))))
+
+        options.vocab_size = len(word2idx)
+
+        combine_list = []
+
+        for example_id, sent in zip(example_ids, sentences):
+            combine_list.append(
+                generate_inputs_worigin(sent, tokenizer, reconstruct_mapping[example_id], options.mask)
+            )
+
+        return {
+            'sentences': combine_list,
+            'word2idx': word2idx,
+            'extra': reconstruct_data['extra'],
+            'metadata': None,
+            'tokenizer': tokenizer,
+        }
 
 
 def make_batch_iterator(options, dset, shuffle=True, include_partial=False, filter_length=0,
@@ -470,6 +570,12 @@ def make_batch_iterator(options, dset, shuffle=True, include_partial=False, filt
     word2idx = dset['word2idx']
     extra = dset['extra']
     metadata = dset['metadata']
+    
+    tokenizer = None
+    if 'tokenizer' in dset:
+        tokenizer = dset['tokenizer']
+
+    idx2word = {v: k for k, v in word2idx.items()}
 
     cuda = options.cuda
     multigpu = options.multigpu
@@ -499,7 +605,8 @@ def make_batch_iterator(options, dset, shuffle=True, include_partial=False, filt
             vocab=None, k_neg=options.k_neg,
             options_path=options.elmo_options_path,
             weights_path=options.elmo_weights_path,
-            length_to_size=length_to_size,
+            length_to_size=length_to_size, emb_type=options.emb, word2idx=word2idx, idx2word=idx2word,
+            tokenizer=tokenizer
             )
     
     else:
@@ -517,7 +624,7 @@ def make_batch_iterator(options, dset, shuffle=True, include_partial=False, filt
             vocab=vocab_lst, k_neg=options.k_neg,
             options_path=options.elmo_options_path,
             weights_path=options.elmo_weights_path,
-            length_to_size=length_to_size,
+            length_to_size=length_to_size, emb_type=options.emb,
             )
 
     # DIRTY HACK: Makes it easier to print examples later. Should really wrap this within the class.

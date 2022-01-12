@@ -27,8 +27,6 @@ def indexify(sentences, word2idx, unk_index=None):
     def fn(s):
         for w in s:
             if w not in word2idx and unk_index is None:
-                print('w missing: ', w)
-                print('s missing: ', s)
                 raise ValueError
             yield word2idx.get(w, unk_index)
     return [list(fn(s)) for s in tqdm(sentences, desc='indexify')]
