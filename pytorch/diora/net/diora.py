@@ -5,8 +5,12 @@ from diora.net.outside_index import get_outside_index
 from diora.net.inside_index import get_inside_index
 from diora.net.offset_cache import get_offset_cache
 
+from math import sqrt
 
 TINY = 1e-8
+
+def ncells2level(ncells):
+    return (int(sqrt(8 * ncells + 1)) - 1) // 2
 
 
 class UnitNorm(object):
@@ -291,7 +295,7 @@ def inside_score(score_func, batch_info, hs, ss):
     return s, p
 
 
-def inside_aggregate(batch_info, h, c, s, p, normalize_func):
+def inside_aggregate(batch_info, h, c, s, p, normalize_func, extra_info=None):
     B = batch_info.batch_size
     L = batch_info.length - batch_info.level
     N = batch_info.level
@@ -300,13 +304,22 @@ def inside_aggregate(batch_info, h, c, s, p, normalize_func):
     c_agg = torch.sum(c.view(B, L, N, -1) * p, 2)
     s_agg = torch.sum(s * p, 2)
 
+    if extra_info is not None:
+        # extra_info: batch x extra_length x emb_size
+        # h_agg: batch x h_agg_length x emb_size
+        # att: batch x extra_length x h_agg_length
+        att = torch.einsum('abc,adc->abd', extra_info, h_agg)
+        att_add = torch.einsum('abc,abd->acd', att, extra_info)
+        # there should be a coefficient
+        h_agg = att_add + h_agg
+
     h_agg = normalize_func(h_agg)
     c_agg = normalize_func(c_agg)
 
     return h_agg, c_agg, s_agg
 
 
-def inside_func(compose_func, score_func, batch_info, chart, index, normalize_func):
+def inside_func(compose_func, score_func, batch_info, chart, index, normalize_func, extra_info, level_attn):
     # compose_func: ComposeMLP(self.size, leaf=True)
     # score_func: Bilinear(self.size)
     # chart.inside_h: (batch_size, ncells, size)
@@ -323,7 +336,30 @@ def inside_func(compose_func, score_func, batch_info, chart, index, normalize_fu
     # (B, L, N, 1), L = length - level; N = level;
     # p is the softmax of s
     s, p = inside_score(score_func, batch_info, hlst, slst)
-    hbar, cbar, sbar = inside_aggregate(batch_info, h, c, s, p, normalize_func)
+
+    if extra_info is not None and level_attn:
+        # for vision information
+        B = batch_info.batch_size
+        L = batch_info.length - batch_info.level
+        N = batch_info.level
+        
+        # for text information
+        extra_B, extra_ncells, extra_E = extra_info.shape
+        
+        assert extra_B == B, 'The batch size between vision and text should be aligned.'
+        
+        # calculate the number of length
+        extra_L = ncells2level(extra_ncells)
+
+        extra_level = min(N, extra_L-1)
+        
+        offset = index.get_offset(extra_L)[extra_level]
+
+        extra_level_L = extra_L - extra_level
+
+        extra_info = extra_info[:, offset:offset+extra_level_L]
+
+    hbar, cbar, sbar = inside_aggregate(batch_info, h, c, s, p, normalize_func, extra_info)
 
     inside_fill_chart(batch_info, chart, index, hbar, cbar, sbar)
 
@@ -366,7 +402,7 @@ def outside_score(score_func, batch_info, hs, ss):
     return s, p
 
 
-def outside_aggregate(batch_info, h, c, s, p, normalize_func):
+def outside_aggregate(batch_info, h, c, s, p, normalize_func, extra_info=None):
     B = batch_info.batch_size
     L = batch_info.length - batch_info.level
     N = s.shape[1]
@@ -375,13 +411,18 @@ def outside_aggregate(batch_info, h, c, s, p, normalize_func):
     c_agg = torch.sum(c.view(B, N, L, -1) * p, 1)
     s_agg = torch.sum(s * p, 1)
 
+    if extra_info is not None:
+        att = torch.einsum('abc,adc->abd', extra_info, h_agg)
+        att_add = torch.einsum('abc,abd->acd', att, extra_info)
+        h_agg = att_add + h_agg
+
     h_agg = normalize_func(h_agg)
     c_agg = normalize_func(c_agg)
 
     return h_agg, c_agg, s_agg
 
 
-def outside_func(compose_func, score_func, batch_info, chart, index, normalize_func):
+def outside_func(compose_func, score_func, batch_info, chart, index, normalize_func, extra_info, level_attn):
     ph, sh = get_outside_states(
         batch_info, chart.outside_h, chart.inside_h, index, batch_info.size)
     pc, sc = get_outside_states(
@@ -395,6 +436,26 @@ def outside_func(compose_func, score_func, batch_info, chart, index, normalize_f
 
     h, c = outside_compose(compose_func, hlst, clst)
     s, p = outside_score(score_func, batch_info, hlst, slst)
+
+    if extra_info is not None and level_attn:
+        B = batch_info.batch_size
+        L = batch_info.length - batch_info.level
+        N = batch_info.level
+
+        extra_B, extra_ncells, extra_E = extra_info.shape
+
+        assert extra_B == B, 'The batch size between vision and text should be aligned'
+
+        extra_L = ncells2level(extra_ncells)
+
+        extra_level = min(N, extra_L-1)
+
+        offset = index.get_offset(extra_L)[extra_level]
+
+        extra_level_L = extra_L - extra_level
+
+        extra_info = extra_info[:, offset:offset+extra_level_L]
+
     hbar, cbar, sbar = outside_aggregate(batch_info, h, c, s, p, normalize_func)
 
     outside_fill_chart(batch_info, chart, index, hbar, cbar, sbar)
@@ -409,7 +470,7 @@ class DioraBase(nn.Module):
 
     """
 
-    def __init__(self, size, outside=True, normalize='unit', compress=False):
+    def __init__(self, size, outside=True, normalize='unit', compress=False, level_attn=False):
         super(DioraBase, self).__init__()
         assert normalize in ('none', 'unit'), 'Does not support "{}".'.format(normalize)
 
@@ -419,6 +480,11 @@ class DioraBase(nn.Module):
         self.outside_normalize_func = NormalizeFunc(normalize)
         self.compress = compress
         self.ninput = 2
+
+        self.level_attn = level_attn
+        
+        if level_attn:
+            print('Use level-based attention!')
 
         self.index = None
 
@@ -478,19 +544,26 @@ class DioraBase(nn.Module):
         offset = self.index.get_offset(length)[level]
         return chart[:, offset:offset+L]
 
-    def leaf_transform(self, x):
+    def leaf_transform(self, x, extra_info=None):
         normalize_func = self.inside_normalize_func
         transform_func = self.inside_compose_func.leaf_transform
 
         input_shape = x.shape[:-1]
         h, c = transform_func(x)
+
+        # if extra_info is not None:
+        #     B, L, _ = x.shape
+        #     att = torch.einsum('abc,adc->abd', extra_info, h)
+        #     att_add = torch.einsum('abc,abd->acd', att, extra_info)
+        #     h = h + att_add
+        
         # (batch_size, length, size)
         h = normalize_func(h.view(*input_shape, self.size))
         c = normalize_func(c.view(*input_shape, self.size))
 
         return h, c
 
-    def inside_pass(self):
+    def inside_pass(self, extra_info=None):
         compose_func = self.inside_compose_func
         score_func = self.inside_score_func
         index = self.index
@@ -507,7 +580,7 @@ class DioraBase(nn.Module):
                 )
 
             h, c, s = inside_func(compose_func, score_func, batch_info, chart, index,
-                normalize_func=normalize_func)
+                normalize_func=normalize_func, extra_info=extra_info, level_attn=self.level_attn)
 
             self.inside_hook(level, h, c, s)
 
@@ -539,7 +612,7 @@ class DioraBase(nn.Module):
         self.chart.outside_h[:, -1:] = h
         self.chart.outside_c[:, -1:] = c
 
-    def outside_pass(self):
+    def outside_pass(self, extra_info=None):
         self.initialize_outside_root()
 
         compose_func = self.outside_compose_func
@@ -557,7 +630,7 @@ class DioraBase(nn.Module):
                 )
 
             h, c, s = outside_func(compose_func, score_func, batch_info, chart, index,
-                normalize_func=normalize_func)
+                normalize_func=normalize_func, extra_info=extra_info, level_attn=self.level_attn)
 
             self.outside_hook(level, h, c, s)
 
@@ -584,7 +657,7 @@ class DioraBase(nn.Module):
     def get_chart_wrapper(self):
         return self
 
-    def forward(self, x):
+    def forward(self, x, inside_info=None, outside_info=None):
         if self.index is None:
             self.index = Index(cuda=self.is_cuda)
 
@@ -595,10 +668,10 @@ class DioraBase(nn.Module):
 
         self.init_with_batch(h, c)
 
-        self.inside_pass()
+        self.inside_pass(inside_info)
 
         if self.outside:
-            self.outside_pass()
+            self.outside_pass(outside_info)
 
         return None
 

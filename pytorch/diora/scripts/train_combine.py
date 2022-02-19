@@ -9,7 +9,9 @@ import uuid
 import torch
 import torch.nn as nn
 
-from diora.data.dataset import ConsolidateDatasets, ReconstructDataset, make_batch_iterator, Vocabulary
+from diora.data.dataset import ConsolidateDatasets, ReconstructDataset, make_batch_iterator, Vocabulary, CombineDataset, CombineBertDataset
+from diora.data.viz_dataset import VisionDataset
+from diora.data.combine_dataset import make_combine_batch_iterator
 
 from diora.utils.path import package_path
 from diora.logging.configuration import configure_experiment, get_logger
@@ -18,23 +20,56 @@ from diora.utils.checkpoint import save_experiment
 
 from diora.net.experiment_logger import ExperimentLogger
 
+from transformers import AutoTokenizer, AutoModel
 
-data_types_choices = ('nli', 'conll_jsonl', 'txt', 'txt_id', 'synthetic', 'jsonl', 'partit', "partitwhole")
+from diora.net.vision_models import get_model
 
+import pickle
+
+import numpy as np
+
+data_types_choices = ('nli', 'conll_jsonl', 'txt', 'txt_id', 'synthetic', 'jsonl', 'partit', "partitwhole", "viz")
+
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def count_params(net):
     return sum([x.numel() for x in net.parameters() if x.requires_grad])
 
+def build_net(options, viz_embeddings, txt_embeddings, batch_iterator=None):
+    from diora.net.trainer_combine import build_net
 
-def build_net(options, embeddings, batch_iterator=None):
-    from diora.net.trainer import build_net
-
-    trainer = build_net(options, embeddings, batch_iterator, random_seed=options.seed)
+    trainer = build_net(options, viz_embeddings, txt_embeddings, batch_iterator, random_seed=options.seed)
 
     logger = get_logger()
-    logger.info('# of params = {}'.format(count_params(trainer.net)))
+    logger.info('# of params = {}'.format(count_params(trainer.viz_net) + count_params(trainer.txt_net)))
 
     return trainer
+
+def combine_viz_text_dataset(viz_dataset, text_dataset):
+    text_dict = {}
+    viz_dict = {}
+
+    for idx in range(len(text_dataset['extra']['example_ids'])):
+        example_id = text_dataset['extra']['example_ids'][idx]
+        sent = text_dataset['sentences'][idx]
+        text_dict[example_id] = sent
+
+    for idx in range(len(viz_dataset['extra']['example_ids'])):
+        example_id = viz_dataset['extra']['example_ids'][idx]
+        img = viz_dataset['samples'][idx]
+        viz_dict[example_id] = img
+
+    res = {
+        'sentences': list(text_dict.values()),
+        'samples': list(viz_dict.values()),
+        'embeddings':  text_dataset['embeddings'],
+        'word2idx': text_dataset['word2idx'],
+        'metadata': text_dataset['metadata'],
+        'extra': {'example_ids': list(text_dict.keys())},
+    }
+    
+    return res
 
 
 def generate_seeds(n, seed=11):
@@ -42,6 +77,12 @@ def generate_seeds(n, seed=11):
     seeds = [random.randint(0, 2**16) for _ in range(n)]
     return seeds
 
+def sum_params(params):
+    # input is a list of params
+    total_sum = 0.0
+    for p in params:
+        total_sum += np.sum(p.cpu().numpy())
+    return total_sum
 
 def run_train(options, train_iterator, trainer, validation_iterator):
     logger = get_logger()
@@ -49,53 +90,72 @@ def run_train(options, train_iterator, trainer, validation_iterator):
 
     logger.info('Running train.')
 
-    seeds = generate_seeds(options.max_epoch, options.seed)
+    # seeds = generate_seeds(options.max_epoch, options.seed)
+    seed = options.seed
 
     step = 0
 
     patience = 3
-    best_loss = float('inf')
-    no_improve_cnt = 0
+    best_loss = float('inf')  
+    no_improve_cnt = 0 
 
     loss_records = []
 
-    for epoch, seed in zip(range(options.max_epoch), seeds):
+    ids_pred_class_mapping = {}
+
+    ids_image_parsing_mapping = {}
+    
+    # switch the vision 
+    if options.freeze_model:
+        print('The vision model has been fronzen.')
+        trainer.eval_embed()
+
+    for epoch in range(options.max_epoch):
         # --- Train--- #
 
-        seed = seeds[epoch]
+        # seed = seeds[epoch]
 
         logger.info('epoch={} seed={}'.format(epoch, seed))
 
         def myiterator():
             it = train_iterator.get_iterator(random_seed=seed)
-            # print('it: ', it)
-
             count = 0
 
             for batch_map in it:
                 # TODO: Skip short examples (optionally).
-                if batch_map['length'] <= 2:
-                    # print('wrong')
+                if batch_map['txt_len'] <= 2:
+                    continue
+                
+                if batch_map['viz_len'] <= 2:
                     continue
 
                 yield count, batch_map
                 count += 1
-                # print('count: ', count)
 
         batch_cnt = 0
-        cur_loss = 0.0
+        txt_cur_loss = 0.
+        viz_cur_loss = 0.
 
         for batch_idx, batch_map in myiterator():
-            if options.finetune and step >= options.finetune_after:
-                trainer.freeze_diora()
-            # print('batch_map: ', batch_map)
-            result = trainer.step(batch_map)
-            # print('result: ', result)
 
-            batch_cnt += result['batch_size']
-            cur_loss += result['total_loss'] * result['batch_size']
+            # print('batch_map: ', batch_map.keys())
+            
+            txt_result, viz_result = trainer.step(batch_map)
 
-            experiment_logger.record(result)
+            image_tmp = batch_map['samples'].detach().clone().cpu()
+
+            batch_size = batch_map['batch_size']
+                
+            with torch.no_grad():
+                pred_vectors, pred_classes = trainer.get_class(batch_map)
+
+
+            batch_cnt += txt_result['batch_size']
+            txt_cur_loss += txt_result['total_loss'] * txt_result['batch_size']
+            viz_cur_loss += viz_result['total_loss'] * viz_result['batch_size']
+            
+            experiment_logger.record(txt_result)
+            experiment_logger.record(viz_result)
 
             if step % options.log_every_batch == 0:
                 experiment_logger.log_batch(epoch, step, batch_idx, batch_size=options.batch_size)
@@ -113,48 +173,71 @@ def run_train(options, train_iterator, trainer, validation_iterator):
                     trainer.save_model(os.path.join(options.experiment_path, 'model.step_{}.pt'.format(step)))
                     save_experiment(os.path.join(options.experiment_path, 'experiment.step_{}.json'.format(step)), step)
 
-            del result
+            del txt_result
+            del viz_result
 
             step += 1
 
         experiment_logger.log_epoch(epoch, step)
-        avg_loss = cur_loss / batch_cnt
-        logger.info('The avg_loss is: {}'.format(str(avg_loss)))
-        
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            no_improve_cnt = 0
-        else:
-            no_improve_cnt += 1
-            if no_improve_cnt > patience:
-                logger.info("Already reach the patience")
-                sys.exit()
+        txt_avg_loss = txt_cur_loss / batch_cnt
+        viz_avg_loss = viz_cur_loss / batch_cnt
+        logger.info('The txt avg_loss is: {}'.format(str(txt_avg_loss)))
+        logger.info('The viz avg_loss is: {}'.format(str(viz_avg_loss)))
+
+        # calculates
+        logger.info('The sum of viz frozen part is {}'.format(str(sum_params(
+            [p for p in trainer.viz_net.parameters() if not p.requires_grad]
+        ))))
+
+        logger.info('The sum of txt frozen part is {}'.format(str(sum_params(
+            [p for p in trainer.txt_net.parameters() if not p.requires_grad]
+        ))))
+
+        # if avg_loss < best_loss:
+        #     best_loss = avg_loss
+        #     no_improve_cnt = 0
+        # else:
+        #     no_improve_cnt += 1
+        #     if no_improve_cnt > patience:
+        #         logger.info("Already reach the patience")
+                 
+        #         sys.exit()
 
         if options.max_step is not None and step >= options.max_step:
             logger.info('Max-Step={} Quitting.'.format(options.max_step))
             sys.exit()
 
-
 def get_train_dataset(options):
-    return ReconstructDataset().initialize(options, text_path=options.train_path,
+    viz_dataset = VisionDataset().initialize(options,
+                                      vision_dir=options.train_path,
+                                      filter_length=options.train_filter_length)
+
+    text_dataset = ReconstructDataset().initialize(options, text_path=options.train_path,
         embeddings_path=options.embeddings_path, filter_length=options.train_filter_length,
         data_type=options.train_data_type)
 
+    return combine_viz_text_dataset(viz_dataset, text_dataset)
+
 
 def get_train_iterator(options, dataset):
-    return make_batch_iterator(options, dataset, shuffle=True,
+    return make_combine_batch_iterator(options, dataset, shuffle=True,
             include_partial=True, filter_length=options.train_filter_length,
             batch_size=options.batch_size, length_to_size=options.length_to_size)
 
 
 def get_validation_dataset(options):
-    return ReconstructDataset().initialize(options, text_path=options.validation_path,
-            embeddings_path=options.embeddings_path, filter_length=options.validation_filter_length,
-            data_type=options.validation_data_type)
+    viz_dataset =  VisionDataset().initialize(options,
+                                      vision_dir=options.validation_path,
+                                      filter_length=options.validation_filter_length)
+    
+    text_dataset = ReconstructDataset().initialize(options, text_path=options.validation_path,
+        embeddings_path=options.embeddings_path, filter_length=options.train_filter_length,
+        data_type=options.validation_data_type)
 
+    return combine_viz_text_dataset(viz_dataset, text_dataset)
 
 def get_validation_iterator(options, dataset):
-    return make_batch_iterator(options, dataset, shuffle=False,
+    return make_combine_batch_iterator(options, dataset, shuffle=False,
             include_partial=True, filter_length=options.validation_filter_length,
             batch_size=options.validation_batch_size, length_to_size=options.length_to_size)
 
@@ -162,9 +245,6 @@ def get_validation_iterator(options, dataset):
 def get_train_and_validation(options):
     train_dataset = get_train_dataset(options)
     validation_dataset = get_validation_dataset(options)
-
-    # Modifies datasets. Unifying word mappings, embeddings, etc.
-    ConsolidateDatasets([train_dataset, validation_dataset]).run()
 
     return train_dataset, validation_dataset
 
@@ -174,18 +254,31 @@ def run(options):
     logger = get_logger()
     experiment_logger = ExperimentLogger()
 
+    bert_type = options.bert_type
+
     train_dataset, validation_dataset = get_train_and_validation(options)
-    # print('train embeddings: ', train_dataset['embeddings'].shape)
-    # print('valid embeddings: ', validation_dataset['embeddings'].shape)
+
     train_iterator = get_train_iterator(options, train_dataset)
     validation_iterator = get_validation_iterator(options, validation_dataset)
-    embeddings = train_dataset['embeddings']
-    # print('embeddings: ', embeddings.shape)
+    txt_embeddings = train_dataset['embeddings']
+
+    # get the vision embeddings
+    viz_embeddings = get_model(options)
+
+    if options.freeze_model:
+        logger.info('The model has been frozen.')
+        print('model: ', viz_embeddings)
+        for p in viz_embeddings.parameters():
+            p.requires_grad = False
 
     logger.info('Initializing model.')
-    trainer = build_net(options, embeddings, validation_iterator)
-    logger.info('Model:')
-    for name, p in trainer.net.named_parameters():
+    trainer = build_net(options, viz_embeddings, txt_embeddings, validation_iterator)
+    logger.info('Vision Model:')
+    for name, p in trainer.viz_net.named_parameters():
+        logger.info('{} {} {}'.format(name, p.shape, p.requires_grad))
+
+    logger.info('Text Model:')
+    for name, p in trainer.txt_net.named_parameters():
         logger.info('{} {} {}'.format(name, p.shape, p.requires_grad))
 
     if options.save_init:
@@ -251,7 +344,7 @@ def argument_parser():
 
     # Data (preprocessing).
     parser.add_argument('--uppercase', action='store_true')
-    parser.add_argument('--train_filter_length', default=50, type=int)
+    parser.add_argument('--train_filter_length', default=0, type=int)
     parser.add_argument('--validation_filter_length', default=0, type=int)
 
     # Model.
@@ -266,7 +359,7 @@ def argument_parser():
     parser.add_argument('--reconstruct_mode', default='margin', choices=('margin', 'softmax'))
 
     # Model (Embeddings).
-    parser.add_argument('--emb', default='w2v', choices=('w2v', 'elmo', 'bert', 'both'))
+    parser.add_argument('--emb', default='w2v', choices=('w2v', 'elmo', 'bert', 'resnet', 'both', 'resnet18', 'resnet50', 'combine', 'combine50'))
 
     # Model (Negative Sampler).
     parser.add_argument('--margin', default=1, type=float)
@@ -279,11 +372,6 @@ def argument_parser():
     parser.add_argument('--elmo_cache_dir', default=None, type=str,
                         help='If set, then context-insensitive word embeddings will be cached ' + \
                              '(identified by a hash of the vocabulary).')
-
-    # BERT
-    parser.add_argument('--bert_cache_dir', default=None, type=str,
-                        help='If set, then context-insensitive word embeddings will be cached ' + \
-                            '(identified by a hash of the vocabulary).')
 
     # Training.
     parser.add_argument('--batch_size', default=10, type=int)
@@ -310,6 +398,38 @@ def argument_parser():
     # Add Optimization
     parser.add_argument('--word2idx', default=None, type=str)
 
+    # add bert type
+    parser.add_argument('--bert_type', default='bert-base-uncased', type=str)
+
+    # bert
+    parser.add_argument('--tokenizer_loading_path', default=None, type=str)
+    parser.add_argument('--bertmodel_loading_path', default=None, type=str)
+
+    # mask or not
+    parser.add_argument('--mask', default=False, type=bool)
+
+    # add vision type
+    parser.add_argument('--vision_type', default='chair', type=str)
+    # add vision model
+    parser.add_argument('--vision_pretrain_path', default=None, type=str)
+    # freeze model
+    parser.add_argument('--freeze_model', default=1, type=int)
+
+    # level attn
+    parser.add_argument('--level_attn', default=0, type=int)
+
+    # share diora_for_both text and 
+    parser.add_argument('--diora_shared', default=0, type=int)
+
+    # level or not
+    parser.add_argument('--mixture', default=0, type=int)
+
+    # txt2img
+    parser.add_argument('--txt2img', default=0, type=int)
+
+    # outside_pass
+    parser.add_argument('--outside_attn', default=0, type=int)
+    
     return parser
 
 

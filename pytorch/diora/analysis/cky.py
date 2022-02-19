@@ -6,7 +6,7 @@ from diora.logging.configuration import get_logger
 
 
 class ParsePredictor(object):
-    def __init__(self, options, net, word2idx):
+    def __init__(self, options, net, word2idx, emb_type=None):
         super(ParsePredictor, self).__init__()
         self.options = options
         self.net = net
@@ -16,17 +16,18 @@ class ParsePredictor(object):
         else:
             self.idx2word = None
         self.logger = get_logger()
+        self.emb_type = emb_type
 
     def parse_batch(self, batch_map):
-        if self.options.emb == 'elmo':
+        if self.options.emb == 'elmo' or self.emb_type == 'elmo':
             sentences = batch_map['sentences']
             batch_size = sentences.shape[0]
             length = sentences.shape[1]
-        elif self.options.emb == 'bert':
+        elif self.options.emb == 'bert' or self.emb_type == 'bert':
             token_mask = batch_map['sentences']['token_mask']
             batch_size = token_mask.shape[0]
             length = token_mask.shape[1]
-        elif self.options.emb == 'resnet':
+        elif self.options.emb.startswith('resnet') or self.emb_type == 'resnet' or self.emb_type == 'viz':
             samples = batch_map['samples']
             batch_size = samples.shape[0]
             length = samples.shape[1]
@@ -47,15 +48,15 @@ class ParsePredictor(object):
         return trees
 
     def batched_cky(self, batch_map, scalars):
-        if self.options.emb == 'elmo':
+        if self.options.emb == 'elmo' or self.emb_type == 'elmo':
             sentences = batch_map['sentences']
             batch_size = sentences.shape[0]
             length = sentences.shape[1]
-        elif self.options.emb == 'bert':
+        elif self.options.emb == 'bert' or self.emb_type == 'bert':
             token_mask = batch_map['sentences']['token_mask']
             batch_size = token_mask.shape[0]
             length = token_mask.shape[1]
-        elif self.options.emb == 'resnet':
+        elif self.options.emb.startswith('resnet') or self.emb_type == 'resnet' or self.emb_type == 'viz':
             samples = batch_map['samples']
             batch_size = samples.shape[0]
             length = samples.shape[1]
@@ -84,7 +85,12 @@ class ParsePredictor(object):
 
                 # Assumes that the bottom-left most leaf is in the first constituent.
                 # (batch_size, level, 1) N = level
-                spbatch = scalars[level][pos]
+                try:
+                    spbatch = scalars[level][pos]
+                except:
+                    print('scalars: ', scalars)
+                    print('level: ', level)
+                    print('pos: ', pos)
 
                 for idx in range(N):
                     # (level, pos)

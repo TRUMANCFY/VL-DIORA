@@ -73,11 +73,21 @@ class FixedLengthBatchSampler(Sampler):
             elif self.emb_type == 'viz':
                 # x = self.data_source.dataset[i]
                 length = len(self.data_source.dataset[i]['images'])
+            elif self.emb_type == 'both':
+                # length = 100 * len(se)
+                img = self.data_source.viz_dataset.dataset[i]['images']
+                sent = self.data_source.text_dataset.dataset[i]
+                txt_len = len(sent)
+                img_len = len(img)
+                length = (txt_len, img_len)
             else:
                 raise Exception('Embedding type is not valid.')
 
-            if self.maxlen is not None and self.maxlen > 0 and length > self.maxlen:
-                continue
+            if self.maxlen is not None and self.maxlen > 0:
+                if isinstance(length, int) and length > self.maxlen:
+                    continue
+                elif isinstance(length, tuple) and length[0] > self.maxlen:
+                    continue
 
             length_map.setdefault(length, []).append(i)
 
@@ -123,7 +133,7 @@ class FixedLengthBatchSampler(Sampler):
 
         self.state[length]['position'] = position
         self.index = index
-
+        
         return batch_index
 
     def __iter__(self):
@@ -150,7 +160,7 @@ class VizDataset(torch.utils.data.Dataset):
 
     def __init__(self, dataset):
         self.dataset = dataset
-        self.local_records = {}
+        # self.local_records = {}
     
     def __getitem__(self, index):
         item = self.dataset[index]
@@ -172,14 +182,26 @@ class VizDataset(torch.utils.data.Dataset):
         new_item['images'] = images
         new_item['targets'] = torch.LongTensor(target_list)
 
-        if index in self.local_records:
-            origin_img = self.local_records[index]
-            assert torch.equal(origin_img, images), 'Images not consistent!'
-        else:
-            self.local_records[index] = new_item['images']
+        # if index in self.local_records:
+        #     origin_img = self.local_records[index]
+        #     assert torch.equal(origin_img, images), 'Images not consistent!'
+        # else:
+        #     self.local_records[index] = new_item['images']
 
         return index, new_item
         
 
     def __len__(self):
         return len(self.dataset)
+
+class CombineDataset(torch.utils.data.Dataset):
+    def __init__(self, text_data, viz_data):
+        assert len(text_data) == len(viz_data), 'The length of data should be the same.'
+        self.text_dataset = SimpleDataset(text_data)
+        self.viz_dataset = VizDataset(viz_data)
+    
+    def __getitem__(self, index):
+        return index, self.text_dataset[index][1], self.viz_dataset[index][1]
+    
+    def __len__(self):
+        return len(self.text_dataset)

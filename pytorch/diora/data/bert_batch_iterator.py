@@ -222,11 +222,6 @@ class BERTBatchIterator(object):
                             neg_ensembles['token_type_ids'][batch_idx, idx, sub_tk_idx] = neg_sample_frame[batch_idx][idx][sub_tk_idx]['token_type_ids'].squeeze(0)
                             neg_ensembles['attention_mask'][batch_idx, idx, sub_tk_idx] = neg_sample_frame[batch_idx][idx][sub_tk_idx]['attention_mask'].squeeze(0)
                             neg_ensembles['token_mask'][batch_idx, idx, sub_tk_idx] = neg_sample_frame[batch_idx][idx][sub_tk_idx]['token_mask'].squeeze(0)
-            
-            # print('ensembles negative_token_mask: ', ensembles['negative_token_mask'].shape)
-            # print('ensembles negative_token_type_ids: ', ensembles['negative_token_type_ids'].shape)
-            # print('ensembles negative_attention_mask: ', ensembles['negative_attention_mask'].shape)
-            # print('ensembles negative_token_mask: ', ensembles['negative_token_mask'].shape)
 
             ensembles['neg_ensembles'] = neg_ensembles
 

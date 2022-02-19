@@ -63,11 +63,12 @@ def run_train(options, train_iterator, trainer, validation_iterator):
 
     logger.info('Running train.')
 
-    seeds = generate_seeds(options.max_epoch, options.seed)
+    # seeds = generate_seeds(options.max_epoch, options.seed)
+    seed = options.seed
 
     step = 0
 
-    patience = 2
+    patience = 4
     best_loss = float('inf')  
     no_improve_cnt = 0 
 
@@ -79,12 +80,15 @@ def run_train(options, train_iterator, trainer, validation_iterator):
 
     tmp_record_conv1 = None
     tmp_record_head1 = None
+    
+    # switch the vision 
+    if options.freeze_model:
+        trainer.eval_embed()
 
-
-    for epoch, seed in zip(range(options.max_epoch), seeds):
+    for epoch in range(options.max_epoch):
         # --- Train--- #
 
-        seed = seeds[epoch]
+        # seed = seeds[epoch]
 
         logger.info('epoch={} seed={}'.format(epoch, seed))
 
@@ -103,59 +107,79 @@ def run_train(options, train_iterator, trainer, validation_iterator):
         batch_cnt = 0
         cur_loss = 0
 
-        if tmp_record_conv1 is None:
-            print('assign conv1')
-            tmp_record_conv1 = trainer.net.embed.model.backbone.conv1.weight.detach().clone()
-            
-        if tmp_record_head1 is None:
-            print('assing head1')
-            tmp_record_head1 = trainer.net.embed.model.cluster_head[0].weight.data.detach().clone()
-
-
         for batch_idx, batch_map in myiterator():
-            if options.finetune and step >= options.finetune_after:
-                trainer.freeze_diora()
             
             result = trainer.step(batch_map)
-            with torch.no_grad():
-                pred_vectors, pred_classes = trainer.get_class(batch_map)
+
+            image_tmp = batch_map['samples'].detach().clone().cpu()
 
             # weight_cluster = trainer.net.embed.model.cluster_head[0].weight.data.detach().clone()
 
             # if len(weights_cluster) > 0:
                 # print('HERE: ', weights_cluster[-1] == weight_cluster)
             # weights_cluster.append(weight_cluster)
-            
+
             batch_size = batch_map['batch_size']
+
+            # if epoch == 0:
+            #     with torch.no_grad():
+            #         pred_vectors, pred_classes = trainer.get_class(batch_map)
+                
+            #     for idx in range(batch_size):
+            #         example_id = batch_map['example_ids'][idx]
+            #         pred_class = pred_classes[idx].tolist()
+
+                    # print('example_id: ', example_id)
+                    # print('class str: ', '|'.join([str(x) for x in pred_class]))
             
-            # save the parameters
-            for idx in range(batch_size):
-                example_id = batch_map['example_ids'][idx]
-                pred_class = pred_classes[idx].tolist()
-                pred_vector = pred_vectors[idx]
+            ##########################################
+            # with torch.no_grad():
+            #     pred_vectors, pred_classes = trainer.get_class(batch_map)
+            
+            
+            # # save the parameters
+            # if options.freeze_model:
+            #     for idx in range(batch_size):
+            #         example_id = batch_map['example_ids'][idx]
+            #         pred_class = pred_classes[idx].tolist()
+            #         pred_vector = pred_vectors[idx]
 
-                if example_id in ids_pred_class_mapping:
-                    new_str = '|'.join([str(x) for x in pred_class])
-                    origin_str = '|'.join([str(x) for x in ids_pred_class_mapping[example_id][1]])
-                    print('Output comparison: ', torch.equal(pred_vector, ids_pred_class_mapping[example_id][0]))
-                    if new_str != origin_str or torch.equal(pred_vector, ids_pred_class_mapping[example_id][0]):
-                        print('example_id: ', example_id)
-                        print('new_str: ', new_str)
-                        print('origin_str: ', origin_str)
-                        
-                        print('Conv comparison')
-                        print(tmp_record_conv1 == trainer.net.embed.model.backbone.conv1.weight.detach().clone())
-                        
-                        print('Head comparison')
-                        print(tmp_record_head1 == trainer.net.embed.model.cluster_head[0].weight.data.detach().clone())
+            #         if example_id in ids_pred_class_mapping:
+            #             new_str = '|'.join([str(x) for x in pred_class])
+            #             origin_str = '|'.join([str(x) for x in ids_pred_class_mapping[example_id][1]])
+            #             # print('Output comparison: ', torch.equal(pred_vector, ids_pred_class_mapping[example_id][0]))
+            #             # origin_output_sum = torch.sum(ids_pred_class_mapping[example_id][0])
+            #             # new_output_sum = torch.sum(pred_vector)
+            #             if new_str != origin_str or not torch.allclose(pred_vector, ids_pred_class_mapping[example_id][0]):
+            #                 print('class: ', torch.equal(pred_vector, ids_pred_class_mapping[example_id][0]))
+            #                 print('class diff: ', torch.sum(pred_vector - ids_pred_class_mapping[example_id][0]))
+            #                 print('example_id: ', example_id)
+            #                 print('new_str: ', new_str)
+            #                 print('origin_str: ', origin_str)
+                            
+            #                 # print('pred_class: ', torch.sum(pred_class))
+            #                 # print('origin_pred_class: ', torch.sum(ids_pred_class_mapping[example_id][1]))
 
-                        print('The sum of frozen part is {}'.format(str(sum_params(
-                            [p for p in trainer.net.parameters() if not p.requires_grad]
-                        ))))
-                        sys.exit()
-                else:
-                    ids_pred_class_mapping[example_id] = (pred_vector, pred_class)
-                    # ids_image_parsing_mapping[example_id] = image_tmp[idx]
+            #                 print('pred_vector: ', torch.sum(pred_vector))
+            #                 print('origin_pred_vector: ', torch.sum(ids_pred_class_mapping[example_id][0]))
+                    
+            #                 print('The sum of frozen part is {}'.format(str(sum_params(
+            #                     [p for p in trainer.net.parameters() if not p.requires_grad]
+            #                 ))))
+
+            #                 print('The comparison between the image: ', torch.equal(image_tmp[idx], ids_image_parsing_mapping[example_id]))
+
+            #                 # x, y = trainer.get_class({'samples': image_tmp[idx].unsqueeze(0).cuda()})
+            #                 # print(torch.sum(x))
+                            
+            #                 # sys.exit()
+            #         else:
+            #             # print('pred_vector: {} pred_vector: {}'.format(example_id, pred_class))
+            #             ids_pred_class_mapping[example_id] = (pred_vector, pred_class)
+            #             ids_image_parsing_mapping[example_id] = image_tmp[idx]
+
+
+            #######################################            
 
             # with torch.no_grad():
             #     class_pred = trainer.get_class(batch_map)
@@ -203,8 +227,8 @@ def run_train(options, train_iterator, trainer, validation_iterator):
             if no_improve_cnt > patience:
                 logger.info("Already reach the patience")
                 # save
-                with open('./data/partit_data/train_pred_class.pkl', 'wb') as f:
-                    pickle.dump(ids_pred_class_mapping, f)
+                # with open('./data/partit_data/train_pred_class.pkl', 'wb') as f:
+                #     pickle.dump(ids_pred_class_mapping, f)
                  
                 sys.exit()
 
@@ -258,10 +282,12 @@ def run(options):
     model = get_model(options)
 
     if options.freeze_model:
-        logger.info('The model has been frozen.')
-        print('model: ', model)
-        for p in model.parameters():
+        logger.info('The head has been frozen.')
+        for p in model.cluster_head[0].parameters():
             p.requires_grad = False
+        # logger.info('The model has been frozen.')
+        # for p in model.parameters():
+        #     p.requires_grad = False
 
     logger.info('Initializing model.')
     trainer = build_net(options, model, validation_iterator)
@@ -347,7 +373,7 @@ def argument_parser():
     parser.add_argument('--reconstruct_mode', default='margin', choices=('margin', 'softmax'))
 
     # Model (Embeddings).
-    parser.add_argument('--emb', default='w2v', choices=('w2v', 'elmo', 'bert', 'resnet', 'both'))
+    parser.add_argument('--emb', default='w2v', choices=('w2v', 'elmo', 'bert', 'resnet', 'both', 'resnet18', 'resnet50'))
 
     # Model (Negative Sampler).
     parser.add_argument('--margin', default=1, type=float)
@@ -401,7 +427,7 @@ def argument_parser():
     # add vision model
     parser.add_argument('--vision_pretrain_path', default=None, type=str)
     # freeze model
-    parser.add_argument('--freeze_model', default=1, type=str)
+    parser.add_argument('--freeze_model', default=1, type=int)
 
     return parser
 

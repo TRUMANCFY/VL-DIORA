@@ -62,19 +62,23 @@ export PYTHONPATH=/itet-stor/fencai/net_scratch/diora/pytorch/:$PYTHONPATH
 # 8de11564: model.
 
 
-srun python diora/scripts/parse_viz.py \
+srun python diora/scripts/parse_combine.py \
     --batch_size 1 \
-    --data_type viz \
-    --emb resnet18 \
-    --load_model_path ../log/cc31f6c3/model.step_34500.pt \
-    --model_flags ../log/cc31f6c3/flags.json \
-    --validation_path ./data/partit_data/0.chair/test \
+    --data_type partit \
+    --emb resnet50 \
+    --load_model_path ../log/569a1213/model.step_2000.pt \
+    --model_flags ../log/569a1213/flags.json \
+    --validation_path ./data/partit_data/3.bag/test \
     --validation_filter_length 20 \
     --word2idx './data/partit_data/partnet.dict.pkl' \
     --k_neg 5 \
     --freeze_model 1 \
     --cuda \
-    --vision_type "chair"
+    --vision_type "bag" \
+    --level_attn 0 \
+    --diora_shared 0 \
+    --mixture 1
+
 
 echo finished at: `date`
 exit 0;

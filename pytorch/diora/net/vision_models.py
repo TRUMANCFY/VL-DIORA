@@ -16,7 +16,12 @@ TYPE_CLASSES = {
 }
 
 def get_model(options):
-    backbone = resnet18()
+    if options.emb == 'resnet18' or options.emb == 'resnet' or options.emb == 'combine':
+        backbone = resnet18()
+    elif options.emb == 'resnet50' or options.emb == 'combine50':
+        backbone = resnet50()
+    else:
+        raise Exception('The embedding type {} is illegal.'.format(options.emb))
     num_classes = TYPE_CLASSES[options.vision_type]['num_classes']
     num_heads = TYPE_CLASSES[options.vision_type]['num_heads']
 
@@ -27,9 +32,12 @@ def get_model(options):
     if options.vision_pretrain_path is not None and os.path.exists(options.vision_pretrain_path):
         print('Loading model from ', options.vision_pretrain_path)
         state = torch.load(options.vision_pretrain_path, map_location='cpu')
-        model.load_state_dict(state, strict=False)
+        missing = model.load_state_dict(state['model'], strict=True)
+        print('Missing: ', missing)
+    elif options.load_model_path is not None:
+        pass
     else:
-        raise Exception("No vison_pretrain_path given.")
+        raise Exception("No vision_pretrain_path given.")
     
     return model
 
@@ -98,6 +106,7 @@ def resnet18():
 
 
 def resnet50():
-    backbone = models.__dict__['resnet50']()
+    backbone = models.resnet50()
+    backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
     backbone.fc = nn.Identity()
     return {'backbone': backbone, 'dim': 2048}

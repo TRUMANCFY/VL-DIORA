@@ -27,7 +27,12 @@ class ExperimentLogger(object):
             self.A = Accumulator()
         A = self.A
 
-        self.c[result['length']] += 1
+        length_key = None
+        for k in result.keys():
+            if 'len' in k:
+                length_key = k
+
+        self.c[result[length_key]] += 1
 
         for k, v in result.items():
             if 'loss' in k:

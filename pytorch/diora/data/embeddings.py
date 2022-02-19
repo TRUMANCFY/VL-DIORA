@@ -70,7 +70,7 @@ class EmbeddingsReader(object):
     def get_embeddings(self, options, embeddings_path, word2idx):
         if options.emb == 'w2v':
             out = self.get_emb_w2v(options, embeddings_path, word2idx)
-        elif options.emb == 'elmo':
+        elif options.emb == 'elmo' or options.emb == 'combine' or options.emb == 'combine50':
             out = self.get_emb_elmo(options, embeddings_path, word2idx)
         elif options.emb == 'both':
             out = self.get_emb_both(options, embeddings_path, word2idx)

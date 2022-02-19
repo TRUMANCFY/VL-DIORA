@@ -17,6 +17,29 @@ import transformers
 
 import torch.nn.functional as F
 
+EPS=1e-8
+
+def entropy(x, input_as_probabilities):
+    """ 
+    Helper function to compute the entropy over the batch 
+
+    input: batch w/ shape [b, num_classes]
+    output: entropy value [is ideally -log(num_classes)]
+    """
+
+    if input_as_probabilities:
+        x_ =  torch.clamp(x, min = EPS)
+        b =  x_ * torch.log(x_)
+    else:
+        b = F.softmax(x, dim = 1) * F.log_softmax(x, dim = 1)
+
+    if len(b.size()) == 2: # Sample-wise entropy
+        return -b.sum(dim = 1).mean()
+    elif len(b.size()) == 1: # Distribution-wise entropy
+        return - b.sum()
+    else:
+        raise ValueError('Input tensor is %d-Dimensional' %(len(b.size())))
+
 class ReconstructionLoss(nn.Module):
     name = 'reconstruct_loss'
 
@@ -86,8 +109,8 @@ class ReconstructionSoftmaxLoss(nn.Module):
         self.input_size = input_size
 
         self.embeddings = embeddings
-        self.mat = nn.Parameter(torch.FloatTensor(size, input_size))
         self._cuda = cuda
+        self.mat = nn.Parameter(torch.FloatTensor(size, input_size))
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -277,7 +300,7 @@ class ReconstructionBERTSimSoftmaxLoss(nn.Module):
 class ReconstructionVizSoftmaxLoss(nn.Module):
     name = 'reconstruct_viz_softmax_loss'
 
-    def __init__(self, embeddings, input_dim, size, margin=1, cuda=False):
+    def __init__(self, options, embeddings, input_dim, size, margin=1, cuda=False):
         super(ReconstructionVizSoftmaxLoss, self).__init__()
         self.input_size = input_dim
         self.size = size
@@ -293,6 +316,7 @@ class ReconstructionVizSoftmaxLoss(nn.Module):
     
         # self.cls = nn.Parameter(torch.FloatTensor(self.nclusters, self.backbone_dim))
         self._cuda = cuda
+        self.options = options
 
         self.reset_parameters()
     
@@ -349,6 +373,12 @@ class ReconstructionVizSoftmaxLoss(nn.Module):
         lossfn = nn.KLDivLoss()
         loss = lossfn(diora, batch)
 
+        loss_entropy = 0.0
+        # if not self.options.freeze_model:
+        #     loss_entropy = entropy(batch, input_as_probabilities=True)
+
+        loss = loss - 5 * loss_entropy
+
         ######################### Classification #####################
         # emb_pos = self.embeddings(images, 'default')
         # emb_pos = emb_pos.view(batch_size * length, -1)
@@ -375,10 +405,19 @@ class ReconstructionVizSoftmaxLoss(nn.Module):
 
         return loss, ret
 
-def get_loss_funcs(options, batch_iterator=None, embedding_layer=None):
-    bert_bool = (options.emb == 'bert')
-    elmo_bool = (options.emb == 'elmo')
-    viz_bool = (options.emb.startswith('res'))
+def get_loss_funcs(options, batch_iterator=None, embedding_layer=None, emb_type=None):
+    bert_bool = None
+    elmo_bool = None
+    viz_bool = None
+    
+    if emb_type is None:
+        bert_bool = (options.emb == 'bert')
+        elmo_bool = (options.emb == 'elmo')
+        viz_bool = (options.emb.startswith('res'))
+    else:
+        bert_bool = (emb_type == 'bert')
+        elmo_bool = (emb_type == 'elmo')
+        viz_bool = (emb_type.startswith('res'))
 
     if bert_bool:
         if hasattr(options, 'vocab_size'):
@@ -408,7 +447,7 @@ def get_loss_funcs(options, batch_iterator=None, embedding_layer=None):
     elif options.k_neg > 0 and bert_bool and options.reconstruct_mode == 'softmax' :
         reconstruction_loss_fn = ReconstructionBERTSimSoftmaxLoss(vocab_size=input_dim, size=size, cuda=cuda)
     elif viz_bool and options.reconstruct_mode == 'softmax':
-        reconstruction_loss_fn = ReconstructionVizSoftmaxLoss(None, input_dim=input_dim, size=size, cuda=cuda)
+        reconstruction_loss_fn = ReconstructionVizSoftmaxLoss(options, None, input_dim=input_dim, size=size, cuda=cuda)
     loss_funcs.append(reconstruction_loss_fn)
 
     return loss_funcs
@@ -478,24 +517,25 @@ class VizEmbed(nn.Module):
         self.model = resnet
         self.input_size = input_size
         self.size = size
-        self.mat = nn.Linear(input_size, size)
+        # self.mat = nn.Linear(input_size, size)
         self.reset_parameters()
     
     def reset_parameters(self):
-        nn.init.normal_(self.mat.weight)
-        nn.init.normal_(self.mat.bias)
+        # nn.init.normal_(self.mat.weight)
+        # nn.init.normal_(self.mat.bias)
+        pass
     
     def forward(self, batch, forward_pass='backbone'):
         assert forward_pass in {'default', 'backbone', 'head', 'return_all'}
 
         dim_size = len(batch.shape)
-
         if dim_size == 3:
             batch_size, channel, img_size = batch.shape
             batch = batch.reshape(batch_size * channel, img_size)
         else:
             batch_size, channel, img_size, img_size = batch.shape
             batch = batch.view(batch_size * channel, 1, img_size, img_size)
+
         
         e = self.model(batch, forward_pass)
 
@@ -548,14 +588,14 @@ class Net(nn.Module):
 
         return ret, loss
 
-    def forward(self, batch, neg_samples=None, compute_loss=True, info=None):
+    def forward(self, batch, neg_samples=None, compute_loss=True, info=None, inside_info=None, outside_info=None):
         # batch shape: batch_size x seq_len
         # Embed
         embed = self.embed(batch)
     
         # shape of embedding: batch_size x seq_len x emb_size
         # Run DIORA
-        self.diora(embed)
+        self.diora(embed, inside_info=inside_info, outside_info=outside_info)
 
         # Compute Loss
         if compute_loss:
@@ -674,13 +714,13 @@ class Viz_Net(nn.Module):
 
         return ret, loss
     
-    def forward(self, batch, neg_samples=None, compute_loss=True, info=None):
+    def forward(self, batch, neg_samples=None, compute_loss=True, info=None, inside_info=None, outside_info=None):
         # embed = self.embed(batch, 'default')
         embed = self.embed(batch)
         # print('cls: ', self.embed.model.nclusters)
         # print('embed shape: ', embed.shape)
 
-        self.diora(embed)
+        self.diora(embed, inside_info=inside_info, outside_info=outside_info)
 
         if compute_loss:
             ret, loss = self.compute_loss(batch, neg_samples, info=info)
@@ -697,7 +737,7 @@ class Viz_Net(nn.Module):
             output = self.embed(batch, 'default').detach().clone()
             # print('output: ', output)
             output_idx = torch.argmax(output, dim=-1)
-        return output, output_idx
+        return output.cpu(), output_idx.cpu()
 
 
 class Trainer(object):
@@ -713,16 +753,29 @@ class Trainer(object):
 
         # update the categories
         self.bert_bool = (options.emb == 'bert')
-        self.viz_bool = (options.emb == 'resnet')
+        self.viz_bool = (options.emb.startswith('resnet'))
         self.elmo_bool = (options.emb == 'elmo')
-
+        
         self.parallel_model = None
 
         print("Trainer initialized with {} gpus.".format(ngpus))
 
+        self.emb_eval = hasattr(self.options, 'freeze_model') and self.options.freeze_model and self.viz_bool
+
     def freeze_diora(self):
         for p in self.net.diora.parameters():
             p.requires_grad = False
+    
+    def eval_embed(self):
+        self.net.train()
+        self.net.embed.eval()
+        # self.net.embed.model.cluster_head[0].eval()
+    
+    def eval_whole(self):
+        self.net.eval()
+    
+    def train(self):
+        self.net.train()
 
     def parameter_norm(self, requires_grad=True, diora=False):
         net = self.net.diora if diora else self.net
@@ -758,7 +811,7 @@ class Trainer(object):
 
         for k in todelete:
             del state_dict[k]
-
+    
         torch.save({
             'state_dict': state_dict,
         }, model_file)
@@ -789,7 +842,7 @@ class Trainer(object):
         for k in state_dict_net.keys():
             if 'embeddings' in k:
                 state_dict_toload[k] = state_dict_net[k]
-
+        
         Trainer.get_single_net(net).load_state_dict(state_dict_toload)
 
     def run_net(self, batch_map, compute_loss=True, multigpu=False):
@@ -816,14 +869,13 @@ class Trainer(object):
         return out
 
     def gradient_update(self, loss):
-        # self.optimizer.zero_grad()
-        # loss.backward()
-        # params = [p for p in self.net.parameters() if p.requires_grad]
-        # total_sum = [p.numel() for p in params]
-        # # print(sum(total_sum))
-        # torch.nn.utils.clip_grad_norm_(params, 5.0)
-        # self.optimizer.step()
-        pass
+        self.optimizer.zero_grad()
+        loss.backward()
+        params = [p for p in self.net.parameters() if p.requires_grad]
+        total_sum = [p.numel() for p in params]
+        # print(sum(total_sum))
+        torch.nn.utils.clip_grad_norm_(params, 5.0)
+        self.optimizer.step()
 
     def prepare_result(self, batch_map, model_output):
         result = {}
@@ -853,8 +905,13 @@ class Trainer(object):
     def _step(self, batch_map, train=True, compute_loss=True):
         if train:
             self.net.train()
+            if self.emb_eval:
+                self.net.embed.eval()
+                # self.net.embed.model.cluster_head[0].eval()
+                
         else:
             self.net.eval()
+
         multigpu = self.ngpus > 1 and train
 
         if self.elmo_bool:
@@ -876,6 +933,9 @@ class Trainer(object):
         result = self.prepare_result(batch_map, model_output)
 
         return result
+    
+    def eval(self):
+        self.net.eval()
 
     def get_class(self, batch_map):
         if not self.viz_bool:
@@ -888,7 +948,7 @@ class Trainer(object):
 def build_net(options, embeddings=None, batch_iterator=None, random_seed=None):
     # bert_bool = isinstance(embeddings, transformers.models.bert.modeling_bert.BertModel)
     bert_bool = (options.emb == 'bert')
-    viz_bool = (options.emb == 'resnet')
+    viz_bool = (options.emb.startswith('resnet'))
     elmo_bool = (options.emb == 'elmo')
 
     logger = get_logger()
@@ -898,10 +958,14 @@ def build_net(options, embeddings=None, batch_iterator=None, random_seed=None):
     k_neg = options.k_neg
     margin = options.margin
     normalize = options.normalize
+    if hasattr(options, 'level_attn'):
+        level_attn = options.level_attn
+    else:
+        level_attn = False
 
-    for p in embeddings.parameters():
-        if p.requires_grad:
-            print('REQUIRES_GRAD')
+    # for p in embeddings.parameters():
+    #     if p.requires_grad:
+    #         print('REQUIRES_GRAD')
 
     if bert_bool:
         input_dim = embeddings.encoder.layer[-1].output.dense.out_features
@@ -921,6 +985,8 @@ def build_net(options, embeddings=None, batch_iterator=None, random_seed=None):
         os.environ['MASTER_ADDR'] = options.master_addr
         os.environ['MASTER_PORT'] = options.master_port
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    else:
+        print('No MultiGPU')
 
     if bert_bool:
         embed = BERTEmbed(embeddings, input_size=input_dim, size=size)
@@ -932,11 +998,11 @@ def build_net(options, embeddings=None, batch_iterator=None, random_seed=None):
 
     # DIORA
     if options.arch == 'treelstm':
-        diora = DioraTreeLSTM(size, outside=True, normalize=normalize, compress=False)
+        diora = DioraTreeLSTM(size, outside=True, normalize=normalize, compress=False, level_attn=level_attn)
     elif options.arch == 'mlp':
-        diora = DioraMLP(size, outside=True, normalize=normalize, compress=False)
+        diora = DioraMLP(size, outside=True, normalize=normalize, compress=False, level_attn=level_attn)
     elif options.arch == 'mlp-shared':
-        diora = DioraMLPShared(size, outside=True, normalize=normalize, compress=False)
+        diora = DioraMLPShared(size, outside=True, normalize=normalize, compress=False, level_attn=level_attn)
 
     # Loss
     # normally, it is ReconstructionLoss

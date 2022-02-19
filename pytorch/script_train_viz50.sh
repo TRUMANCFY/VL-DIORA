@@ -26,24 +26,24 @@ export PYTHONPATH=/itet-stor/fencai/net_scratch/diora/pytorch/:$PYTHONPATH
 
 srun python -m torch.distributed.launch diora/scripts/train_viz.py \
     --arch mlp-shared \
-    --batch_size 8 \
+    --batch_size 16 \
     --data_type viz \
-    --emb resnet18 \
-    --hidden_dim 512 \
+    --emb resnet50 \
+    --hidden_dim 2048 \
     --log_every_batch 500 \
     --lr 1e-4 \
     --normalize unit \
     --reconstruct_mode softmax \
-    --save_after 500 \
-    --train_filter_length 0 \
-    --train_path './data/partit_data/0.chair/train' \
-    --validation_path './data/partit_data/0.chair/test' \
-    --vision_type 'chair' \
-    --max_epoch 1000 \
-    --master_port 29501 \
+    --save_after 100 \
+    --train_filter_length 20 \
+    --train_path './data/partit_data/1.table/train' \
+    --validation_path './data/partit_data/1.table/test' \
+    --vision_type 'table' \
+    --max_epoch 100 \
+    --master_port 29502 \
     --word2idx './data/partit_data/partnet.dict.pkl' \
     --vocab_size 100 \
-    --vision_pretrain_path '/itet-stor/fencai/net_scratch/VLGrammar/SCAN/outputs/partnet/chair/scan/model-resnet18.pth.tar_40' \
+    --vision_pretrain_path '/itet-stor/fencai/net_scratch/VLGrammar/SCAN/outputs/partnet/table/scan/model-resnet50.pth.tar_64' \
     --freeze_model 1 \
     --save_distinct 500 \
     --cuda
