@@ -148,11 +148,11 @@ class CombineTrainer(object):
             txt_info = None
             if self.options.mixture:
                 txt_inside_info = self.txt_net.diora.inside_h
-                txt_ouside_info = None
+                txt_outside_info = None
                 if self.options.outside_attn:
                     txt_outside_info = self.txt_net.diora.outside_h
 
-                assert '|'.join([str(x) for x in list(txt_outside_info.shape)]) == '|'.join([str(x) for x in list(txt_outside_info.shape)])
+                    assert '|'.join([str(x) for x in list(txt_outside_info.shape)]) == '|'.join([str(x) for x in list(txt_outside_info.shape)])
             # print('txt_info: ', txt_info.shape)
             viz_out = self.viz_net(samples, neg_samples=None, compute_loss=compute_loss, info=info, inside_info=txt_inside_info, outside_info=txt_outside_info)
         
@@ -165,7 +165,7 @@ class CombineTrainer(object):
                 if self.options.outside_attn:
                     viz_outside_info = self.viz_net.diora.outside_h
 
-                assert '|'.join([str(x) for x in list(viz_inside_info.shape)]) == '|'.join([str(x) for x in list(viz_outside_info.shape)]), 'The shape of viz between inside and outside is the same.'
+                    assert '|'.join([str(x) for x in list(viz_inside_info.shape)]) == '|'.join([str(x) for x in list(viz_outside_info.shape)]), 'The shape of viz between inside and outside is the same.'
 
             txt_out = self.txt_net(sentences, neg_samples=neg_samples, compute_loss=compute_loss, info=info, inside_info=viz_inside_info, outside_info=viz_outside_info)
         
@@ -183,7 +183,7 @@ class CombineTrainer(object):
         samples = batch_map['samples']
         info = self.prepare_info(batch_map)
 
-        viz_out = self.viz_net(samples, neg_samples=None, compute_loss=compute_loss, info=info, extra_info=None)
+        viz_out = self.viz_net(samples, neg_samples=None, compute_loss=compute_loss, info=info)
         return viz_out
 
     def prepare_result(self, batch_map, model_output):

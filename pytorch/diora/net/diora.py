@@ -309,6 +309,7 @@ def inside_aggregate(batch_info, h, c, s, p, normalize_func, extra_info=None):
         # h_agg: batch x h_agg_length x emb_size
         # att: batch x extra_length x h_agg_length
         att = torch.einsum('abc,adc->abd', extra_info, h_agg)
+        # print('att: ', att.squeeze(0).argmax(dim=1))
         att_add = torch.einsum('abc,abd->acd', att, extra_info)
         # there should be a coefficient
         h_agg = att_add + h_agg
@@ -456,7 +457,7 @@ def outside_func(compose_func, score_func, batch_info, chart, index, normalize_f
 
         extra_info = extra_info[:, offset:offset+extra_level_L]
 
-    hbar, cbar, sbar = outside_aggregate(batch_info, h, c, s, p, normalize_func)
+    hbar, cbar, sbar = outside_aggregate(batch_info, h, c, s, p, normalize_func, extra_info)
 
     outside_fill_chart(batch_info, chart, index, hbar, cbar, sbar)
 

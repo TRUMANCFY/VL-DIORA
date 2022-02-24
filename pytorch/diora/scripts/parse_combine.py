@@ -339,13 +339,14 @@ def run(options):
 
         with open(os.path.join(options.validation_path, example_id, 'lan_spans.txt'), 'r') as w:
             gold_txt = json.loads(w.read())
-
+        print('example_id: ', example_id)
         print('line: ', line['tree'])
         print('pred_span: ', pred_txt)
         print('gold_txt: ', gold_txt)
 
         gold_txt = set([(a, b) for a, b in gold_txt])
         tp_txt, fp_txt, fn_txt = get_stats(pred_txt, gold_txt)
+        print('f1: ', 2 * tp_txt / (2 * tp_txt + fp_txt + fn_txt))
         corpus_f1_txt[0] += tp_txt
         corpus_f1_txt[1] += fp_txt
         corpus_f1_txt[2] += fn_txt
@@ -397,6 +398,8 @@ def run(options):
         
         gold_txt = set([(a, b) for a, b in gold_txt])
         tp_txt, fp_txt, fn_txt = get_stats(pred_txt, gold_txt)
+        print('f1_viz: ', tp_txt * 2 / (tp_txt * 2 + fp_txt + fn_txt))
+
         corpus_f1_txt[0] += tp_txt
         corpus_f1_txt[1] += fp_txt
         corpus_f1_txt[2] += fn_txt

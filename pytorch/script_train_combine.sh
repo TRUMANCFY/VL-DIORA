@@ -32,25 +32,25 @@ srun python -m torch.distributed.launch --nproc_per_node=1 diora/scripts/train_c
     --emb combine \
     --hidden_dim 512 \
     --k_neg 100 \
-    --log_every_batch 100 \
+    --log_every_batch 300 \
     --reconstruct_mode softmax \
     --lr 2e-3 \
     --normalize unit \
     --save_after 500 \
     --cuda \
-    --max_epoch 100 \
+    --max_epoch 500 \
     --master_port 29500 \
     --word2idx './data/partit_data/partnet.dict.pkl' \
     --freeze_model 1 \
     --level_attn 1 \
-    --diora_shared 1 \
+    --diora_shared 0 \
     --mixture 1 \
-    --txt2img 1 \
-    --outside_attn 1 \
-    --train_path './data/partit_data/0.chair/train' \
-    --validation_path './data/partit_data/0.chair/test' \
-    --vision_pretrain_path '/itet-stor/fencai/net_scratch/VLGrammar/SCAN/outputs/partnet/chair/scan/model-resnet18.pth.tar_40' \
-    --vision_type 'chair'
+    --txt2img 0 \
+    --outside_attn 0 \
+    --train_path './data/partit_data/3.bag/train' \
+    --validation_path './data/partit_data/3.bag/test' \
+    --vision_pretrain_path '/itet-stor/fencai/net_scratch/VLGrammar/SCAN/outputs/partnet/bag/scan/model-resnet18.pth.tar_90' \
+    --vision_type 'bag'
 
 
 

@@ -51,8 +51,8 @@ srun python diora/scripts/parse.py \
     --batch_size 10 \
     --data_type partit \
     --elmo_cache_dir data/elmo \
-    --load_model_path ../log/473a0dcd/model.step_23800.pt \
-    --model_flags ../log/473a0dcd/flags.json \
+    --load_model_path ../log/b482bb14/model.step_4900.pt \
+    --model_flags ../log/b482bb14/flags.json \
     --validation_path ./data/partit_data/1.table/test \
     --validation_filter_length 20 \
     --word2idx './data/partit_data/partnet.dict.pkl'
